@@ -1,19 +1,26 @@
 from __future__ import annotations
 
 import base64
+import calendar
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
 import secrets
+import socket
 import sqlite3
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from html import unescape
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urljoin, urlparse
 
+import feedparser
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -73,6 +80,41 @@ def init_database() -> None:
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_status ON noticias(status)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_created ON noticias(created_at DESC)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS radar_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL UNIQUE,
+                municipality TEXT NOT NULL DEFAULT 'Tequila',
+                category TEXT NOT NULL DEFAULT 'General',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_scan TEXT,
+                last_error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS radar_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                external_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '',
+                published_at TEXT,
+                detected_at TEXT NOT NULL,
+                imported_news_id INTEGER,
+                UNIQUE(source_id, external_id),
+                FOREIGN KEY(source_id) REFERENCES radar_sources(id) ON DELETE CASCADE
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_detected ON radar_items(detected_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_imported ON radar_items(imported_news_id)")
         count = db.execute("SELECT COUNT(*) FROM noticias").fetchone()[0]
         if count == 0:
             seed_database(db)
@@ -218,6 +260,66 @@ class AIStatus(BaseModel):
 class AIConfigRequest(BaseModel):
     api_key: str = Field(min_length=20, max_length=300)
     model: str = Field(default="gpt-5.6-luna", min_length=3, max_length=80)
+
+
+class RadarSourcePayload(BaseModel):
+    name: str = Field(min_length=3, max_length=120)
+    url: str = Field(min_length=10, max_length=800)
+    municipality: str = Field(default="Tequila", max_length=100)
+    category: str = Field(default="General", max_length=80)
+    enabled: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def valid_feed_url(cls, value: str) -> str:
+        cleaned = value.strip()
+        parsed = urlparse(cleaned)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Escribe una dirección RSS o Atom válida que comience con http:// o https://.")
+        return cleaned
+
+
+class RadarSource(RadarSourcePayload):
+    id: int
+    last_scan: str | None
+    last_error: str
+    created_at: str
+    updated_at: str
+    findings: int = 0
+    pending: int = 0
+
+
+class RadarItem(BaseModel):
+    id: int
+    source_id: int
+    source_name: str
+    municipality: str
+    category: str
+    title: str
+    summary: str
+    url: str
+    published_at: str | None
+    detected_at: str
+    imported_news_id: int | None
+
+
+class RadarItemList(BaseModel):
+    items: list[RadarItem]
+    total: int
+
+
+class RadarStats(BaseModel):
+    sources: int
+    active_sources: int
+    findings: int
+    pending: int
+    imported: int
+
+
+class RadarScanResult(BaseModel):
+    scanned_sources: int
+    detected: int
+    errors: list[str]
 
 
 def b64url(data: bytes) -> str:
@@ -366,6 +468,97 @@ def openai_ai_analysis(payload: AIAnalyzeRequest) -> AIAnalysis:
         return local_ai_analysis(payload, "No fue posible consultar OpenAI; se aplicó el modo local.")
 
 
+def clean_feed_text(value: str | None, limit: int) -> str:
+    text = re.sub(r"<[^>]+>", " ", value or "")
+    text = re.sub(r"\s+", " ", unescape(text)).strip()
+    return text[:limit].rstrip()
+
+
+def public_feed_url(value: str) -> None:
+    parsed = urlparse(value)
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not hostname or hostname == "localhost" or hostname.endswith(".local"):
+        raise ValueError("La fuente debe ser una dirección pública http o https.")
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
+    except socket.gaierror as error:
+        raise ValueError("No fue posible encontrar el servidor de la fuente.") from error
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            raise ValueError("Por seguridad, el Radar solo consulta fuentes públicas.")
+
+
+def fetch_feed_bytes(url: str) -> bytes:
+    current_url = url
+    with httpx.Client(timeout=15, follow_redirects=False, headers={"User-Agent": "PulsoMonitor/0.3 (+radar editorial)"}) as client:
+        for _ in range(4):
+            public_feed_url(current_url)
+            response = client.get(current_url)
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = response.headers.get("location")
+                if not location:
+                    raise ValueError("La fuente devolvió una redirección incompleta.")
+                current_url = urljoin(current_url, location)
+                continue
+            response.raise_for_status()
+            if len(response.content) > 2_500_000:
+                raise ValueError("La fuente supera el tamaño permitido de 2.5 MB.")
+            return response.content
+    raise ValueError("La fuente realizó demasiadas redirecciones.")
+
+
+def feed_published_at(entry: dict) -> str | None:
+    parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not parsed:
+        return None
+    try:
+        return datetime.fromtimestamp(calendar.timegm(parsed), timezone.utc).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def row_to_radar_source(row: sqlite3.Row) -> RadarSource:
+    data = dict(row)
+    data["enabled"] = bool(data["enabled"])
+    data["findings"] = int(data.get("findings") or 0)
+    data["pending"] = int(data.get("pending") or 0)
+    return RadarSource(**data)
+
+
+def scan_radar_source(source: sqlite3.Row) -> int:
+    content = fetch_feed_bytes(source["url"])
+    parsed = feedparser.parse(content)
+    if not parsed.entries:
+        raise ValueError("No se encontraron publicaciones en esta dirección RSS o Atom.")
+    detected = 0
+    now = utc_now()
+    with connection() as db:
+        for entry in parsed.entries[:80]:
+            title = clean_feed_text(entry.get("title"), 300)
+            if not title:
+                continue
+            link = str(entry.get("link") or "").strip()[:1200]
+            published_at = feed_published_at(entry)
+            raw_id = str(entry.get("id") or entry.get("guid") or link or f"{title}|{published_at or ''}")
+            external_id = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()
+            summary = clean_feed_text(entry.get("summary") or entry.get("description"), 2_000)
+            cursor = db.execute(
+                """
+                INSERT OR IGNORE INTO radar_items (
+                    source_id, external_id, title, summary, url, published_at, detected_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (source["id"], external_id, title, summary, link, published_at, now),
+            )
+            detected += max(cursor.rowcount, 0)
+        db.execute(
+            "UPDATE radar_sources SET last_scan = ?, last_error = '', updated_at = ? WHERE id = ?",
+            (now, now, source["id"]),
+        )
+    return detected
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_database()
@@ -374,8 +567,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="0.2.0",
-    description="API local para administrar y analizar las noticias de Pulso Tequila.",
+    version="0.3.0",
+    description="API local para administrar, analizar y detectar noticias de Pulso Tequila.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -393,7 +586,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.2.0"}
+    return {"status": "ok", "version": "0.3.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -436,6 +629,178 @@ def configure_ai(payload: AIConfigRequest, _: Annotated[str, Depends(current_use
 @app.post("/api/ia/analizar", response_model=AIAnalysis)
 def analyze_with_ai(payload: AIAnalyzeRequest, _: Annotated[str, Depends(current_user)]) -> AIAnalysis:
     return openai_ai_analysis(payload)
+
+
+@app.get("/api/radar/estadisticas", response_model=RadarStats)
+def radar_statistics(_: Annotated[str, Depends(current_user)]) -> RadarStats:
+    with connection() as db:
+        source_row = db.execute(
+            "SELECT COUNT(*) AS sources, SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS active_sources FROM radar_sources"
+        ).fetchone()
+        item_row = db.execute(
+            """
+            SELECT COUNT(*) AS findings,
+                   SUM(CASE WHEN imported_news_id IS NULL THEN 1 ELSE 0 END) AS pending,
+                   SUM(CASE WHEN imported_news_id IS NOT NULL THEN 1 ELSE 0 END) AS imported
+            FROM radar_items
+            """
+        ).fetchone()
+    return RadarStats(
+        sources=int(source_row["sources"] or 0),
+        active_sources=int(source_row["active_sources"] or 0),
+        findings=int(item_row["findings"] or 0),
+        pending=int(item_row["pending"] or 0),
+        imported=int(item_row["imported"] or 0),
+    )
+
+
+@app.get("/api/radar/fuentes", response_model=list[RadarSource])
+def list_radar_sources(_: Annotated[str, Depends(current_user)]) -> list[RadarSource]:
+    with connection() as db:
+        rows = db.execute(
+            """
+            SELECT s.*,
+                   COUNT(i.id) AS findings,
+                   SUM(CASE WHEN i.id IS NOT NULL AND i.imported_news_id IS NULL THEN 1 ELSE 0 END) AS pending
+            FROM radar_sources s
+            LEFT JOIN radar_items i ON i.source_id = s.id
+            GROUP BY s.id
+            ORDER BY s.enabled DESC, s.name COLLATE NOCASE
+            """
+        ).fetchall()
+    return [row_to_radar_source(row) for row in rows]
+
+
+@app.post("/api/radar/fuentes", response_model=RadarSource, status_code=status.HTTP_201_CREATED)
+def create_radar_source(payload: RadarSourcePayload, _: Annotated[str, Depends(current_user)]) -> RadarSource:
+    now = utc_now()
+    try:
+        with connection() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO radar_sources (name, url, municipality, category, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (payload.name.strip(), payload.url, payload.municipality.strip(), payload.category.strip(), int(payload.enabled), now, now),
+            )
+            row = db.execute("SELECT * FROM radar_sources WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Esta fuente ya está registrada en el Radar.") from None
+    return row_to_radar_source(row)
+
+
+@app.put("/api/radar/fuentes/{source_id}", response_model=RadarSource)
+def update_radar_source(source_id: int, payload: RadarSourcePayload, _: Annotated[str, Depends(current_user)]) -> RadarSource:
+    now = utc_now()
+    try:
+        with connection() as db:
+            cursor = db.execute(
+                """
+                UPDATE radar_sources SET name = ?, url = ?, municipality = ?, category = ?, enabled = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (payload.name.strip(), payload.url, payload.municipality.strip(), payload.category.strip(), int(payload.enabled), now, source_id),
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="La fuente no existe.")
+            row = db.execute("SELECT * FROM radar_sources WHERE id = ?", (source_id,)).fetchone()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Esta fuente ya está registrada en el Radar.") from None
+    return row_to_radar_source(row)
+
+
+@app.delete("/api/radar/fuentes/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_radar_source(source_id: int, _: Annotated[str, Depends(current_user)]) -> Response:
+    with connection() as db:
+        db.execute("DELETE FROM radar_items WHERE source_id = ?", (source_id,))
+        cursor = db.execute("DELETE FROM radar_sources WHERE id = ?", (source_id,))
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="La fuente no existe.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/radar/escanear", response_model=RadarScanResult)
+def scan_radar(_: Annotated[str, Depends(current_user)], source_id: int | None = None) -> RadarScanResult:
+    with connection() as db:
+        if source_id is not None:
+            rows = db.execute("SELECT * FROM radar_sources WHERE id = ?", (source_id,)).fetchall()
+        else:
+            rows = db.execute("SELECT * FROM radar_sources WHERE enabled = 1 ORDER BY id").fetchall()
+    if source_id is not None and not rows:
+        raise HTTPException(status_code=404, detail="La fuente no existe.")
+    detected = 0
+    errors: list[str] = []
+    for source in rows:
+        try:
+            detected += scan_radar_source(source)
+        except Exception as error:
+            message = clean_feed_text(str(error), 300) or "No fue posible consultar la fuente."
+            errors.append(f"{source['name']}: {message}")
+            with connection() as db:
+                now = utc_now()
+                db.execute(
+                    "UPDATE radar_sources SET last_scan = ?, last_error = ?, updated_at = ? WHERE id = ?",
+                    (now, message, now, source["id"]),
+                )
+    return RadarScanResult(scanned_sources=len(rows), detected=detected, errors=errors)
+
+
+@app.get("/api/radar/hallazgos", response_model=RadarItemList)
+def list_radar_items(
+    _: Annotated[str, Depends(current_user)],
+    pending_only: bool = False,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> RadarItemList:
+    where = " WHERE i.imported_news_id IS NULL" if pending_only else ""
+    with connection() as db:
+        total = db.execute(f"SELECT COUNT(*) FROM radar_items i{where}").fetchone()[0]
+        rows = db.execute(
+            f"""
+            SELECT i.*, s.name AS source_name, s.municipality, s.category
+            FROM radar_items i JOIN radar_sources s ON s.id = i.source_id
+            {where}
+            ORDER BY COALESCE(i.published_at, i.detected_at) DESC, i.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+    return RadarItemList(items=[RadarItem(**dict(row)) for row in rows], total=int(total))
+
+
+@app.post("/api/radar/hallazgos/{item_id}/importar", response_model=NewsItem, status_code=status.HTTP_201_CREATED)
+def import_radar_item(item_id: int, _: Annotated[str, Depends(current_user)]) -> NewsItem:
+    now = utc_now()
+    with connection() as db:
+        item = db.execute(
+            """
+            SELECT i.*, s.name AS source_name, s.municipality, s.category
+            FROM radar_items i JOIN radar_sources s ON s.id = i.source_id WHERE i.id = ?
+            """,
+            (item_id,),
+        ).fetchone()
+        if item is None:
+            raise HTTPException(status_code=404, detail="El hallazgo no existe.")
+        if item["imported_news_id"] is not None:
+            raise HTTPException(status_code=409, detail="Este hallazgo ya fue importado a Noticias.")
+        cursor = db.execute(
+            """
+            INSERT INTO noticias (
+                title, summary, content, source, author, municipality, category,
+                priority, status, image_url, url, published_at, updated_at, is_ai, tags, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item["title"], item["summary"], item["summary"], item["source_name"],
+                "Radar Pulso Monitor", item["municipality"], item["category"], "Media", "Pendiente",
+                "", item["url"], item["published_at"], now, 0,
+                json.dumps(["radar", item["category"].lower()], ensure_ascii=False), now,
+            ),
+        )
+        news_id = int(cursor.lastrowid)
+        db.execute("UPDATE radar_items SET imported_news_id = ? WHERE id = ?", (news_id, item_id))
+        row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    return row_to_news(row)
 
 
 @app.get("/api/noticias/estadisticas", response_model=NewsStats)
