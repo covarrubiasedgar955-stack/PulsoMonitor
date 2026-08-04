@@ -1,6 +1,6 @@
-# Pulso Monitor v0.1
+# Pulso Monitor v0.2
 
-Centro local de administración de noticias para **Pulso Tequila**. Esta primera versión incluye un dashboard, estadísticas reales, inicio de sesión, buscador, filtros y gestión completa de noticias mediante una API con base de datos SQLite.
+Centro local de administración y redacción asistida de noticias para **Pulso Tequila**. Incluye un dashboard, gestión editorial completa y un Asistente IA que transforma reportes o publicaciones en propuestas listas para revisar.
 
 ## Funciones disponibles
 
@@ -12,6 +12,10 @@ Centro local de administración de noticias para **Pulso Tequila**. Esta primera
 - Base de datos SQLite creada automáticamente.
 - API FastAPI documentada en Swagger.
 - Diseño adaptable para computadora, tableta y celular.
+- Asistente IA para sugerir título, resumen, redacción, categoría, prioridad y etiquetas.
+- Modo local disponible sin servicios externos.
+- Conexión opcional con OpenAI mediante la Responses API y resultados estructurados.
+- Guardado directo de las propuestas como noticias pendientes.
 
 ## Instalación rápida en Windows
 
@@ -29,6 +33,17 @@ Contraseña: admin123
 
 > La contraseña inicial está pensada para uso local. Antes de publicar el sistema en internet, configura credenciales y una clave secreta propias mediante las variables incluidas en `backend/.env.example`.
 
+## Asistente IA
+
+El módulo **Asistente IA** funciona inmediatamente en modo local. Para activar la redacción avanzada:
+
+1. Entra a `Asistente IA` desde el menú.
+2. Pulsa `Conectar OpenAI`.
+3. Crea una clave en https://platform.openai.com/api-keys.
+4. Pega la clave en el formulario local y pulsa `Guardar conexión`.
+
+La clave se valida y se guarda solamente en `backend/.env` dentro de la computadora. Este archivo está excluido de Git.
+
 ## Inicio manual
 
 Backend:
@@ -45,7 +60,7 @@ Frontend, en otra terminal:
 
 ```powershell
 npm install
-npm run dev
+npm run dev -- --hostname 127.0.0.1 --port 3010
 ```
 
 ## Direcciones locales
@@ -59,6 +74,7 @@ npm run dev
 
 ```text
 app/                 Panel Next.js
+app/ia/              Asistente de redacción y clasificación
 components/          Navegación e inicio de sesión
 lib/                 Cliente de la API
 types/               Tipos de noticias
@@ -70,4 +86,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v0.1 administra noticias capturadas en el panel. La conexión autorizada con fuentes externas y las funciones de redacción asistida por IA se incorporarán en versiones posteriores.
+La v0.2 administra noticias y ofrece redacción asistida con revisión humana obligatoria. El monitoreo de fuentes externas autorizadas se incorporará en la siguiente fase.
