@@ -47,3 +47,31 @@ export interface LoginResponse {
   token_type: "bearer";
   user: { name: string; role: string };
 }
+
+export type AITone = "Informativo" | "Urgente" | "Institucional" | "Cercano";
+
+export interface AIAnalyzeInput {
+  source_text: string;
+  municipality: string;
+  source: string;
+  tone: AITone;
+}
+
+export interface AIAnalysis {
+  title: string;
+  summary: string;
+  content: string;
+  category: string;
+  priority: NewsPriority;
+  tags: string[];
+  confidence: number;
+  warnings: string[];
+  provider: "openai" | "local";
+  model: string | null;
+}
+
+export interface AIStatus {
+  connected: boolean;
+  provider: "openai" | "local";
+  model: string;
+}

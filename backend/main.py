@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -16,7 +17,7 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 from pydantic import BaseModel, Field, field_validator
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -25,10 +26,13 @@ DATABASE_PATH = Path(os.getenv("PULSO_DATABASE_PATH", str(BASE_DIR / "pulso_moni
 ADMIN_USER = os.getenv("PULSO_ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.getenv("PULSO_ADMIN_PASSWORD", "admin123")
 SECRET_KEY = os.getenv("PULSO_SECRET_KEY", "pulso-monitor-local-v01-change-me")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 TOKEN_TTL_SECONDS = 12 * 60 * 60
 
 NewsStatus = Literal["Pendiente", "En revisión", "Programada", "Publicada", "Archivada"]
 NewsPriority = Literal["Baja", "Media", "Alta", "Urgente"]
+AICategory = Literal["General", "Seguridad", "Política", "Deportes", "Eventos", "Turismo", "Servicios", "Comunidad"]
+AITone = Literal["Informativo", "Urgente", "Institucional", "Cercano"]
 
 
 def utc_now() -> str:
@@ -174,6 +178,48 @@ class NewsStats(BaseModel):
     total: int
 
 
+class AIAnalyzeRequest(BaseModel):
+    source_text: str = Field(min_length=30, max_length=12_000)
+    municipality: str = Field(default="Tequila", max_length=100)
+    source: str = Field(default="Reporte recibido", max_length=120)
+    tone: AITone = "Informativo"
+
+    @field_validator("source_text")
+    @classmethod
+    def clean_source_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if len(cleaned) < 30:
+            raise ValueError("Escribe al menos 30 caracteres para analizar.")
+        return cleaned
+
+
+class AIModelOutput(BaseModel):
+    title: str = Field(min_length=3, max_length=180)
+    summary: str = Field(min_length=10, max_length=500)
+    content: str = Field(min_length=20, max_length=6_000)
+    category: AICategory
+    priority: NewsPriority
+    tags: list[str] = Field(min_length=2, max_length=8)
+    confidence: int = Field(ge=0, le=100)
+    warnings: list[str] = Field(default_factory=list, max_length=5)
+
+
+class AIAnalysis(AIModelOutput):
+    provider: Literal["openai", "local"]
+    model: str | None = None
+
+
+class AIStatus(BaseModel):
+    connected: bool
+    provider: Literal["openai", "local"]
+    model: str
+
+
+class AIConfigRequest(BaseModel):
+    api_key: str = Field(min_length=20, max_length=300)
+    model: str = Field(default="gpt-5.6-luna", min_length=3, max_length=80)
+
+
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
@@ -229,6 +275,97 @@ def news_values(payload: NewsPayload, updated_at: str) -> tuple:
     )
 
 
+def local_ai_analysis(payload: AIAnalyzeRequest, service_warning: str | None = None) -> AIAnalysis:
+    text = re.sub(r"[ \t]+", " ", payload.source_text).strip()
+    lowered = text.lower()
+    category_terms = {
+        "Seguridad": ["accidente", "choque", "incendio", "policía", "detenido", "carretera", "emergencia", "protección civil"],
+        "Política": ["cabildo", "presidente", "ayuntamiento", "gobierno", "regidor", "elección", "partido"],
+        "Deportes": ["fútbol", "torneo", "partido", "equipo", "deportivo", "carrera"],
+        "Eventos": ["evento", "festival", "concierto", "celebración", "agenda", "feria"],
+        "Turismo": ["turismo", "visitantes", "hotel", "tequila", "recorrido", "pueblo mágico"],
+        "Servicios": ["agua", "luz", "cierre vial", "tránsito", "obra", "recolección", "servicio"],
+        "Comunidad": ["vecinos", "colonia", "comunidad", "escuela", "familias", "apoyo"],
+    }
+    scores = {category: sum(term in lowered for term in terms) for category, terms in category_terms.items()}
+    category = max(scores, key=scores.get) if max(scores.values(), default=0) else "General"
+    urgent_terms = ["urgente", "peligro", "evacuar", "incendio", "accidente", "desaparecido", "emergencia"]
+    high_terms = ["cierre", "alerta", "precaución", "afectación", "suspendido"]
+    priority: NewsPriority = "Urgente" if any(term in lowered for term in urgent_terms) else "Alta" if any(term in lowered for term in high_terms) else "Media"
+
+    sentences = [sentence.strip(" .\n") for sentence in re.split(r"(?<=[.!?])\s+|\n+", text) if sentence.strip()]
+    first = sentences[0] if sentences else text
+    title = first[:177].rstrip(" ,;:") + ("…" if len(first) > 177 else "")
+    title = title[0].upper() + title[1:] if title else "Información en desarrollo"
+    summary_source = " ".join(sentences[:2]) or text
+    summary = summary_source[:497].rstrip() + ("…" if len(summary_source) > 497 else "")
+    content = text if len(sentences) > 1 else f"De acuerdo con la información recibida en {payload.municipality}, {text[0].lower() + text[1:] if len(text) > 1 else text}"
+    matched_tags = [term for terms in category_terms.values() for term in terms if term in lowered]
+    tags = list(dict.fromkeys([payload.municipality.lower(), category.lower(), *matched_tags]))[:6]
+    while len(tags) < 2:
+        tags.append("información local")
+    warnings = ["Resultado generado en modo local; revisa los datos antes de publicar."]
+    if service_warning:
+        warnings.insert(0, service_warning)
+    return AIAnalysis(
+        title=title,
+        summary=summary,
+        content=content,
+        category=category,
+        priority=priority,
+        tags=tags,
+        confidence=55,
+        warnings=warnings,
+        provider="local",
+        model=None,
+    )
+
+
+def openai_ai_analysis(payload: AIAnalyzeRequest) -> AIAnalysis:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    model = os.getenv("OPENAI_MODEL", OPENAI_MODEL).strip() or OPENAI_MODEL
+    if not api_key:
+        return local_ai_analysis(payload)
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key)
+        response = client.responses.parse(
+            model=model,
+            reasoning={"effort": "low"},
+            store=False,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres el editor de Pulso Tequila, un medio local de Tequila, Jalisco. "
+                        "Convierte información sin estructura en una propuesta periodística clara y neutral. "
+                        "No inventes nombres, fechas, cifras, lugares ni declaraciones. Si algo no está confirmado, "
+                        "preséntalo como reporte preliminar y agrégalo a warnings. Conserva los nombres propios. "
+                        "El contenido debe tener de dos a cuatro párrafos breves, en español de México, listo para "
+                        "revisión humana. Devuelve entre tres y seis etiquetas útiles."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Municipio: {payload.municipality}\n"
+                        f"Fuente: {payload.source}\n"
+                        f"Tono solicitado: {payload.tone}\n\n"
+                        f"Información original:\n{payload.source_text}"
+                    ),
+                },
+            ],
+            text_format=AIModelOutput,
+        )
+        parsed = response.output_parsed
+        if parsed is None:
+            return local_ai_analysis(payload, "OpenAI no devolvió un resultado utilizable; se aplicó el modo local.")
+        return AIAnalysis(**parsed.model_dump(), provider="openai", model=model)
+    except Exception:
+        return local_ai_analysis(payload, "No fue posible consultar OpenAI; se aplicó el modo local.")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_database()
@@ -237,8 +374,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="0.1.0",
-    description="API local para administrar las noticias de Pulso Tequila.",
+    version="0.2.0",
+    description="API local para administrar y analizar las noticias de Pulso Tequila.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -256,7 +393,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "0.2.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -264,6 +401,41 @@ def login(payload: LoginRequest) -> LoginResponse:
     if not (secrets.compare_digest(payload.username, ADMIN_USER) and secrets.compare_digest(payload.password, ADMIN_PASSWORD)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario o contraseña incorrectos.")
     return LoginResponse(access_token=create_token(payload.username), user=UserInfo(name="Edgar", role="Administrador"))
+
+
+@app.get("/api/ia/estado", response_model=AIStatus)
+def ai_status(_: Annotated[str, Depends(current_user)]) -> AIStatus:
+    connected = bool(os.getenv("OPENAI_API_KEY", "").strip())
+    return AIStatus(
+        connected=connected,
+        provider="openai" if connected else "local",
+        model=os.getenv("OPENAI_MODEL", OPENAI_MODEL),
+    )
+
+
+@app.post("/api/ia/configurar", response_model=AIStatus)
+def configure_ai(payload: AIConfigRequest, _: Annotated[str, Depends(current_user)]) -> AIStatus:
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=payload.api_key.strip())
+        client.models.retrieve(payload.model.strip())
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Ejecuta instalar.bat para instalar la conexión con OpenAI.") from None
+    except Exception:
+        raise HTTPException(status_code=400, detail="No fue posible validar la clave o el modelo de OpenAI.") from None
+
+    env_path = BASE_DIR / ".env"
+    set_key(str(env_path), "OPENAI_API_KEY", payload.api_key.strip(), quote_mode="always")
+    set_key(str(env_path), "OPENAI_MODEL", payload.model.strip(), quote_mode="always")
+    os.environ["OPENAI_API_KEY"] = payload.api_key.strip()
+    os.environ["OPENAI_MODEL"] = payload.model.strip()
+    return AIStatus(connected=True, provider="openai", model=payload.model.strip())
+
+
+@app.post("/api/ia/analizar", response_model=AIAnalysis)
+def analyze_with_ai(payload: AIAnalyzeRequest, _: Annotated[str, Depends(current_user)]) -> AIAnalysis:
+    return openai_ai_analysis(payload)
 
 
 @app.get("/api/noticias/estadisticas", response_model=NewsStats)

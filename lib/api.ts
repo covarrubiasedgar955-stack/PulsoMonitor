@@ -1,4 +1,7 @@
 import type {
+  AIAnalysis,
+  AIAnalyzeInput,
+  AIStatus,
   LoginResponse,
   NewsInput,
   NewsItem,
@@ -94,5 +97,23 @@ export const api = {
 
   deleteNews(id: number) {
     return request<void>(`/api/noticias/${id}`, { method: "DELETE" });
+  },
+
+  aiStatus() {
+    return request<AIStatus>("/api/ia/estado");
+  },
+
+  analyzeWithAI(payload: AIAnalyzeInput) {
+    return request<AIAnalysis>("/api/ia/analizar", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  configureAI(apiKey: string, model = "gpt-5.6-luna") {
+    return request<AIStatus>("/api/ia/configurar", {
+      method: "POST",
+      body: JSON.stringify({ api_key: apiKey, model }),
+    });
   },
 };
