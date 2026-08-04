@@ -1,36 +1,73 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Pulso Monitor v0.1
 
-## Getting Started
+Centro local de administración de noticias para **Pulso Tequila**. Esta primera versión incluye un dashboard, estadísticas reales, inicio de sesión, buscador, filtros y gestión completa de noticias mediante una API con base de datos SQLite.
 
-First, run the development server:
+## Funciones disponibles
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- Inicio de sesión de administrador.
+- Dashboard con noticias del día, pendientes, publicadas y urgentes.
+- Alta, edición y eliminación de noticias.
+- Búsqueda por título, resumen, fuente, municipio y categoría.
+- Filtros por estado y prioridad.
+- Base de datos SQLite creada automáticamente.
+- API FastAPI documentada en Swagger.
+- Diseño adaptable para computadora, tableta y celular.
+
+## Instalación rápida en Windows
+
+1. Descarga o actualiza el repositorio.
+2. Haz doble clic en `instalar.bat` y espera a que termine.
+3. Haz doble clic en `iniciar.bat`.
+4. Se abrirá `http://localhost:3000` en el navegador.
+
+Acceso inicial:
+
+```text
+Usuario: admin
+Contraseña: admin123
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+> La contraseña inicial está pensada para uso local. Antes de publicar el sistema en internet, configura credenciales y una clave secreta propias mediante las variables incluidas en `backend/.env.example`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Inicio manual
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Backend:
 
-## Learn More
+```powershell
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python main.py
+```
 
-To learn more about Next.js, take a look at the following resources:
+Frontend, en otra terminal:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```powershell
+npm install
+npm run dev
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Direcciones locales
 
-## Deploy on Vercel
+- Panel: http://localhost:3000
+- API: http://127.0.0.1:8000
+- Documentación de la API: http://127.0.0.1:8000/docs
+- Estado de la API: http://127.0.0.1:8000/health
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Estructura
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```text
+app/                 Panel Next.js
+components/          Navegación e inicio de sesión
+lib/                 Cliente de la API
+types/               Tipos de noticias
+backend/main.py      API FastAPI y acceso a SQLite
+backend/test_api.py  Pruebas del CRUD
+instalar.bat         Instalación automática para Windows
+iniciar.bat          Arranque automático para Windows
+```
+
+## Alcance de esta versión
+
+La v0.1 administra noticias capturadas en el panel. La conexión autorizada con fuentes externas y las funciones de redacción asistida por IA se incorporarán en versiones posteriores.

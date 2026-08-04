@@ -1,0 +1,35 @@
+@echo off
+chcp 65001 >nul
+title Instalar Pulso Monitor
+cd /d "%~dp0"
+
+echo.
+echo ========================================
+echo   INSTALANDO PULSO MONITOR v0.1
+echo ========================================
+echo.
+
+where node >nul 2>nul || (echo ERROR: Node.js no esta instalado. & pause & exit /b 1)
+where npm >nul 2>nul || (echo ERROR: npm no esta instalado. & pause & exit /b 1)
+where python >nul 2>nul || (echo ERROR: Python no esta instalado. & pause & exit /b 1)
+
+echo [1/3] Instalando el panel web...
+call npm install
+if errorlevel 1 (echo ERROR al instalar el panel. & pause & exit /b 1)
+
+echo [2/3] Preparando el backend...
+if not exist "backend\.venv\Scripts\python.exe" python -m venv backend\.venv
+if errorlevel 1 (echo ERROR al crear el entorno de Python. & pause & exit /b 1)
+
+echo [3/3] Instalando la API...
+call backend\.venv\Scripts\python.exe -m pip install --upgrade pip
+call backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+if errorlevel 1 (echo ERROR al instalar la API. & pause & exit /b 1)
+
+echo.
+echo ========================================
+echo   INSTALACION TERMINADA
+echo ========================================
+echo Ahora abre iniciar.bat
+echo.
+pause
