@@ -18,7 +18,7 @@ Centro local de administración de noticias para **Pulso Tequila**. Esta primera
 1. Descarga o actualiza el repositorio.
 2. Haz doble clic en `instalar.bat` y espera a que termine.
 3. Haz doble clic en `iniciar.bat`.
-4. Se abrirá `http://localhost:3000` en el navegador.
+4. Se abrirá `http://127.0.0.1:3010` en el navegador.
 
 Acceso inicial:
 
@@ -50,7 +50,7 @@ npm run dev
 
 ## Direcciones locales
 
-- Panel: http://localhost:3000
+- Panel: http://127.0.0.1:3010
 - API: http://127.0.0.1:8000
 - Documentación de la API: http://127.0.0.1:8000/docs
 - Estado de la API: http://127.0.0.1:8000/health
