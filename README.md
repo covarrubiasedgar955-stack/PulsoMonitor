@@ -1,6 +1,6 @@
-# Pulso Monitor v0.2
+# Pulso Monitor v0.3
 
-Centro local de administración y redacción asistida de noticias para **Pulso Tequila**. Incluye un dashboard, gestión editorial completa y un Asistente IA que transforma reportes o publicaciones en propuestas listas para revisar.
+Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye un dashboard, gestión editorial completa, Asistente IA y un Radar de fuentes autorizadas.
 
 ## Funciones disponibles
 
@@ -16,6 +16,10 @@ Centro local de administración y redacción asistida de noticias para **Pulso T
 - Modo local disponible sin servicios externos.
 - Conexión opcional con OpenAI mediante la Responses API y resultados estructurados.
 - Guardado directo de las propuestas como noticias pendientes.
+- Registro de fuentes públicas con canales RSS o Atom.
+- Escaneo manual de todas las fuentes o de una fuente individual.
+- Detección automática de duplicados por identificador de origen.
+- Importación de hallazgos como noticias pendientes.
 
 ## Instalación rápida en Windows
 
@@ -43,6 +47,17 @@ El módulo **Asistente IA** funciona inmediatamente en modo local. Para activar 
 4. Pega la clave en el formulario local y pulsa `Guardar conexión`.
 
 La clave se valida y se guarda solamente en `backend/.env` dentro de la computadora. Este archivo está excluido de Git.
+
+## Radar de fuentes
+
+El módulo **Radar** consulta únicamente canales RSS o Atom públicos que el administrador registra expresamente:
+
+1. Entra a `Radar` y pulsa `Agregar fuente`.
+2. Escribe el nombre, municipio, categoría y la dirección del canal RSS o Atom.
+3. Pulsa `Escanear` para detectar publicaciones nuevas.
+4. Revisa cada hallazgo y usa `Importar a Noticias` cuando sea relevante.
+
+El Radar no evade inicios de sesión, no consulta perfiles privados y no publica automáticamente. Cada hallazgo requiere revisión humana.
 
 ## Inicio manual
 
@@ -75,6 +90,7 @@ npm run dev -- --hostname 127.0.0.1 --port 3010
 ```text
 app/                 Panel Next.js
 app/ia/              Asistente de redacción y clasificación
+app/radar/           Radar de fuentes y hallazgos
 components/          Navegación e inicio de sesión
 lib/                 Cliente de la API
 types/               Tipos de noticias
@@ -86,4 +102,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v0.2 administra noticias y ofrece redacción asistida con revisión humana obligatoria. El monitoreo de fuentes externas autorizadas se incorporará en la siguiente fase.
+La v0.3 administra noticias, ofrece redacción asistida y detecta entradas de fuentes RSS o Atom autorizadas. La conexión con APIs oficiales de redes sociales y la programación automática se incorporarán en fases posteriores.

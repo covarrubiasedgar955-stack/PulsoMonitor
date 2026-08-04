@@ -7,6 +7,11 @@ import type {
   NewsItem,
   NewsListResponse,
   NewsStats,
+  RadarItemList,
+  RadarScanResult,
+  RadarSource,
+  RadarSourceInput,
+  RadarStats,
 } from "@/types/news";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
@@ -115,5 +120,44 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ api_key: apiKey, model }),
     });
+  },
+
+  radarStats() {
+    return request<RadarStats>("/api/radar/estadisticas");
+  },
+
+  listRadarSources() {
+    return request<RadarSource[]>("/api/radar/fuentes");
+  },
+
+  createRadarSource(payload: RadarSourceInput) {
+    return request<RadarSource>("/api/radar/fuentes", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  updateRadarSource(id: number, payload: RadarSourceInput) {
+    return request<RadarSource>(`/api/radar/fuentes/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  deleteRadarSource(id: number) {
+    return request<void>(`/api/radar/fuentes/${id}`, { method: "DELETE" });
+  },
+
+  scanRadar(sourceId?: number) {
+    const query = sourceId ? `?source_id=${sourceId}` : "";
+    return request<RadarScanResult>(`/api/radar/escanear${query}`, { method: "POST" });
+  },
+
+  listRadarItems(pendingOnly = false) {
+    return request<RadarItemList>(`/api/radar/hallazgos?pending_only=${pendingOnly}&limit=100`);
+  },
+
+  importRadarItem(id: number) {
+    return request<NewsItem>(`/api/radar/hallazgos/${id}/importar`, { method: "POST" });
   },
 };

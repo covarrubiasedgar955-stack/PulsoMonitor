@@ -75,3 +75,54 @@ export interface AIStatus {
   provider: "openai" | "local";
   model: string;
 }
+
+export interface RadarSourceInput {
+  name: string;
+  url: string;
+  municipality: string;
+  category: string;
+  enabled: boolean;
+}
+
+export interface RadarSource extends RadarSourceInput {
+  id: number;
+  last_scan: string | null;
+  last_error: string;
+  created_at: string;
+  updated_at: string;
+  findings: number;
+  pending: number;
+}
+
+export interface RadarItem {
+  id: number;
+  source_id: number;
+  source_name: string;
+  municipality: string;
+  category: string;
+  title: string;
+  summary: string;
+  url: string;
+  published_at: string | null;
+  detected_at: string;
+  imported_news_id: number | null;
+}
+
+export interface RadarItemList {
+  items: RadarItem[];
+  total: number;
+}
+
+export interface RadarStats {
+  sources: number;
+  active_sources: number;
+  findings: number;
+  pending: number;
+  imported: number;
+}
+
+export interface RadarScanResult {
+  scanned_sources: number;
+  detected: number;
+  errors: string[];
+}
