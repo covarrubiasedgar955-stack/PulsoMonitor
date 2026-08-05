@@ -3,6 +3,7 @@ import type {
   AIAnalyzeInput,
   AIStatus,
   FacebookPostList,
+  FacebookPrepareResult,
   FacebookStatus,
   FacebookSyncResult,
   LoginResponse,
@@ -189,5 +190,9 @@ export const api = {
 
   importFacebookPost(id: number) {
     return request<NewsItem>(`/api/facebook/publicaciones/${id}/importar`, { method: "POST" });
+  },
+
+  prepareFacebookPost(id: number) {
+    return request<FacebookPrepareResult>(`/api/facebook/publicaciones/${id}/preparar`, { method: "POST" });
   },
 };
