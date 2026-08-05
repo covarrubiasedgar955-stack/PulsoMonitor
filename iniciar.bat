@@ -15,6 +15,11 @@ if not exist "backend\.venv\Scripts\python.exe" (
   exit /b 1
 )
 
+if not exist "backend\.env" (
+  echo Falta generar el acceso seguro. Ejecutando instalacion...
+  call instalar.bat
+)
+
 set "PULSO_ROOT=%~dp0"
 
 rem Cierra procesos anteriores de Pulso Monitor que hayan quedado abiertos.

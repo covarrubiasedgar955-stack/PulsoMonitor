@@ -2,6 +2,9 @@ import type {
   AIAnalysis,
   AIAnalyzeInput,
   AIStatus,
+  FacebookPostList,
+  FacebookStatus,
+  FacebookSyncResult,
   LoginResponse,
   NewsInput,
   NewsItem,
@@ -159,5 +162,32 @@ export const api = {
 
   importRadarItem(id: number) {
     return request<NewsItem>(`/api/radar/hallazgos/${id}/importar`, { method: "POST" });
+  },
+
+  facebookStatus() {
+    return request<FacebookStatus>("/api/facebook/estado");
+  },
+
+  connectFacebook(pageId: string, pageAccessToken: string) {
+    return request<FacebookStatus>("/api/facebook/conectar", {
+      method: "POST",
+      body: JSON.stringify({ page_id: pageId, page_access_token: pageAccessToken }),
+    });
+  },
+
+  disconnectFacebook() {
+    return request<void>("/api/facebook/conexion", { method: "DELETE" });
+  },
+
+  syncFacebook() {
+    return request<FacebookSyncResult>("/api/facebook/sincronizar", { method: "POST" });
+  },
+
+  listFacebookPosts(pendingOnly = true) {
+    return request<FacebookPostList>(`/api/facebook/publicaciones?pending_only=${pendingOnly}&limit=100`);
+  },
+
+  importFacebookPost(id: number) {
+    return request<NewsItem>(`/api/facebook/publicaciones/${id}/importar`, { method: "POST" });
   },
 };

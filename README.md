@@ -1,6 +1,6 @@
-# Pulso Monitor v0.3
+# Pulso Monitor v0.4
 
-Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye un dashboard, gestión editorial completa, Asistente IA y un Radar de fuentes autorizadas.
+Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye dashboard, gestión editorial, Asistente IA, Radar de fuentes y conexión autorizada con Facebook.
 
 ## Funciones disponibles
 
@@ -20,6 +20,9 @@ Centro local de administración, redacción y detección de noticias para **Puls
 - Escaneo manual de todas las fuentes o de una fuente individual.
 - Detección automática de duplicados por identificador de origen.
 - Importación de hallazgos como noticias pendientes.
+- Conexión con una página administrada mediante Meta Graph API v26.0.
+- Sincronización de publicaciones de Facebook sin duplicados.
+- Importación de publicaciones de Facebook como noticias pendientes.
 
 ## Instalación rápida en Windows
 
@@ -28,14 +31,7 @@ Centro local de administración, redacción y detección de noticias para **Puls
 3. Haz doble clic en `iniciar.bat`.
 4. Se abrirá `http://127.0.0.1:3010` en el navegador.
 
-Acceso inicial:
-
-```text
-Usuario: admin
-Contraseña: admin123
-```
-
-> La contraseña inicial está pensada para uso local. Antes de publicar el sistema en internet, configura credenciales y una clave secreta propias mediante las variables incluidas en `backend/.env.example`.
+Durante la instalación se genera automáticamente una contraseña única. Los datos aparecen en `ACCESO.txt`, un archivo local excluido de Git. Guárdalo en un lugar seguro y no lo compartas.
 
 ## Asistente IA
 
@@ -58,6 +54,17 @@ El módulo **Radar** consulta únicamente canales RSS o Atom públicos que el ad
 4. Revisa cada hallazgo y usa `Importar a Noticias` cuando sea relevante.
 
 El Radar no evade inicios de sesión, no consulta perfiles privados y no publica automáticamente. Cada hallazgo requiere revisión humana.
+
+## Facebook
+
+El módulo **Facebook** se conecta mediante la API oficial de Meta y requiere:
+
+- El ID de una página que administras.
+- Un Page Access Token válido con los permisos aprobados para leer esa página.
+
+Pulso Monitor valida la conexión, guarda el token solamente en `backend/.env` y permite sincronizar hasta 50 publicaciones recientes por operación. No lee perfiles personales ni grupos privados y no publica automáticamente.
+
+La configuración inicial se realiza desde `Facebook` en el menú. Nunca compartas el token por chat, correo o capturas de pantalla.
 
 ## Inicio manual
 
@@ -91,6 +98,7 @@ npm run dev -- --hostname 127.0.0.1 --port 3010
 app/                 Panel Next.js
 app/ia/              Asistente de redacción y clasificación
 app/radar/           Radar de fuentes y hallazgos
+app/facebook/        Conexión autorizada con una página de Facebook
 components/          Navegación e inicio de sesión
 lib/                 Cliente de la API
 types/               Tipos de noticias
@@ -102,4 +110,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v0.3 administra noticias, ofrece redacción asistida y detecta entradas de fuentes RSS o Atom autorizadas. La conexión con APIs oficiales de redes sociales y la programación automática se incorporarán en fases posteriores.
+La v0.4 administra noticias, ofrece redacción asistida, detecta entradas RSS/Atom y sincroniza publicaciones de una página de Facebook autorizada. El acceso a otras páginas públicas depende de los permisos y la revisión de la aplicación de Meta. La programación y publicación automática se incorporarán en una fase posterior.

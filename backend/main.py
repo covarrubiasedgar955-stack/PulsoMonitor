@@ -24,16 +24,18 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from dotenv import load_dotenv, set_key
+from dotenv import load_dotenv, set_key, unset_key
 from pydantic import BaseModel, Field, field_validator
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+ENV_PATH = Path(os.getenv("PULSO_ENV_PATH", str(BASE_DIR / ".env")))
+load_dotenv(ENV_PATH)
 DATABASE_PATH = Path(os.getenv("PULSO_DATABASE_PATH", str(BASE_DIR / "pulso_monitor.db")))
-ADMIN_USER = os.getenv("PULSO_ADMIN_USER", "admin")
-ADMIN_PASSWORD = os.getenv("PULSO_ADMIN_PASSWORD", "admin123")
-SECRET_KEY = os.getenv("PULSO_SECRET_KEY", "pulso-monitor-local-v01-change-me")
+ADMIN_USER = os.getenv("PULSO_ADMIN_USER", "").strip()
+ADMIN_PASSWORD = os.getenv("PULSO_ADMIN_PASSWORD", "").strip()
+SECRET_KEY = os.getenv("PULSO_SECRET_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+META_GRAPH_VERSION = os.getenv("META_GRAPH_VERSION", "v26.0")
 TOKEN_TTL_SECONDS = 12 * 60 * 60
 
 NewsStatus = Literal["Pendiente", "En revisión", "Programada", "Publicada", "Archivada"]
@@ -115,6 +117,39 @@ def init_database() -> None:
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_detected ON radar_items(detected_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_imported ON radar_items(imported_news_id)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS facebook_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                page_id TEXT NOT NULL DEFAULT '',
+                page_name TEXT NOT NULL DEFAULT '',
+                last_sync TEXT,
+                last_error TEXT NOT NULL DEFAULT '',
+                connected_at TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO facebook_state (id, updated_at) VALUES (1, ?)",
+            (utc_now(),),
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS facebook_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                external_id TEXT NOT NULL UNIQUE,
+                message TEXT NOT NULL,
+                permalink_url TEXT NOT NULL DEFAULT '',
+                picture_url TEXT NOT NULL DEFAULT '',
+                created_time TEXT,
+                detected_at TEXT NOT NULL,
+                imported_news_id INTEGER
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_facebook_posts_detected ON facebook_posts(detected_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_facebook_posts_imported ON facebook_posts(imported_news_id)")
         count = db.execute("SELECT COUNT(*) FROM noticias").fetchone()[0]
         if count == 0:
             seed_database(db)
@@ -320,6 +355,44 @@ class RadarScanResult(BaseModel):
     scanned_sources: int
     detected: int
     errors: list[str]
+
+
+class FacebookConnectRequest(BaseModel):
+    page_id: str = Field(min_length=3, max_length=100)
+    page_access_token: str = Field(min_length=30, max_length=1000)
+
+
+class FacebookStatus(BaseModel):
+    connected: bool
+    page_id: str
+    page_name: str
+    graph_version: str
+    last_sync: str | None
+    last_error: str
+    posts: int
+    pending: int
+    imported: int
+
+
+class FacebookPost(BaseModel):
+    id: int
+    external_id: str
+    message: str
+    permalink_url: str
+    picture_url: str
+    created_time: str | None
+    detected_at: str
+    imported_news_id: int | None
+
+
+class FacebookPostList(BaseModel):
+    items: list[FacebookPost]
+    total: int
+
+
+class FacebookSyncResult(BaseModel):
+    detected: int
+    total_received: int
 
 
 def b64url(data: bytes) -> str:
@@ -559,16 +632,58 @@ def scan_radar_source(source: sqlite3.Row) -> int:
     return detected
 
 
+def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = None) -> dict:
+    query = {**(params or {}), "access_token": token}
+    url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
+    try:
+        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.4"})
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as error:
+        raise ValueError("No fue posible comunicarse con Meta.") from error
+    if not response.is_success or data.get("error"):
+        api_error = data.get("error") or {}
+        message = clean_feed_text(str(api_error.get("message") or "Meta rechazó la solicitud."), 350)
+        raise ValueError(message)
+    return data
+
+
+def facebook_status_data() -> FacebookStatus:
+    connected = bool(os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "").strip() and os.getenv("FACEBOOK_PAGE_ID", "").strip())
+    with connection() as db:
+        state_row = db.execute("SELECT * FROM facebook_state WHERE id = 1").fetchone()
+        count_row = db.execute(
+            """
+            SELECT COUNT(*) AS posts,
+                   SUM(CASE WHEN imported_news_id IS NULL THEN 1 ELSE 0 END) AS pending,
+                   SUM(CASE WHEN imported_news_id IS NOT NULL THEN 1 ELSE 0 END) AS imported
+            FROM facebook_posts
+            """
+        ).fetchone()
+    return FacebookStatus(
+        connected=connected,
+        page_id=os.getenv("FACEBOOK_PAGE_ID", "") if connected else "",
+        page_name=(state_row["page_name"] or os.getenv("FACEBOOK_PAGE_NAME", "")) if connected else "",
+        graph_version=META_GRAPH_VERSION,
+        last_sync=state_row["last_sync"],
+        last_error=state_row["last_error"],
+        posts=int(count_row["posts"] or 0),
+        pending=int(count_row["pending"] or 0),
+        imported=int(count_row["imported"] or 0),
+    )
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if not ADMIN_USER or not ADMIN_PASSWORD or len(SECRET_KEY) < 32:
+        raise RuntimeError("Configuración de acceso incompleta. Ejecuta instalar.bat nuevamente.")
     init_database()
     yield
 
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="0.3.0",
-    description="API local para administrar, analizar y detectar noticias de Pulso Tequila.",
+    version="0.4.0",
+    description="API local para administrar, analizar y detectar noticias, con conexión autorizada a Facebook.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -586,7 +701,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.3.0"}
+    return {"status": "ok", "version": "0.4.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -618,9 +733,8 @@ def configure_ai(payload: AIConfigRequest, _: Annotated[str, Depends(current_use
     except Exception:
         raise HTTPException(status_code=400, detail="No fue posible validar la clave o el modelo de OpenAI.") from None
 
-    env_path = BASE_DIR / ".env"
-    set_key(str(env_path), "OPENAI_API_KEY", payload.api_key.strip(), quote_mode="always")
-    set_key(str(env_path), "OPENAI_MODEL", payload.model.strip(), quote_mode="always")
+    set_key(str(ENV_PATH), "OPENAI_API_KEY", payload.api_key.strip(), quote_mode="always")
+    set_key(str(ENV_PATH), "OPENAI_MODEL", payload.model.strip(), quote_mode="always")
     os.environ["OPENAI_API_KEY"] = payload.api_key.strip()
     os.environ["OPENAI_MODEL"] = payload.model.strip()
     return AIStatus(connected=True, provider="openai", model=payload.model.strip())
@@ -799,6 +913,159 @@ def import_radar_item(item_id: int, _: Annotated[str, Depends(current_user)]) ->
         )
         news_id = int(cursor.lastrowid)
         db.execute("UPDATE radar_items SET imported_news_id = ? WHERE id = ?", (news_id, item_id))
+        row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    return row_to_news(row)
+
+
+@app.get("/api/facebook/estado", response_model=FacebookStatus)
+def facebook_status(_: Annotated[str, Depends(current_user)]) -> FacebookStatus:
+    return facebook_status_data()
+
+
+@app.post("/api/facebook/conectar", response_model=FacebookStatus)
+def connect_facebook(payload: FacebookConnectRequest, _: Annotated[str, Depends(current_user)]) -> FacebookStatus:
+    page_id = payload.page_id.strip()
+    token = payload.page_access_token.strip()
+    try:
+        page = facebook_graph_get(page_id, token, {"fields": "id,name"})
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=f"No se pudo validar la página: {error}") from None
+    returned_id = str(page.get("id") or "")
+    page_name = clean_feed_text(str(page.get("name") or ""), 160)
+    if not returned_id or returned_id != page_id or not page_name:
+        raise HTTPException(status_code=400, detail="Meta no devolvió la página esperada.")
+
+    set_key(str(ENV_PATH), "FACEBOOK_PAGE_ACCESS_TOKEN", token, quote_mode="always")
+    set_key(str(ENV_PATH), "FACEBOOK_PAGE_ID", page_id, quote_mode="always")
+    set_key(str(ENV_PATH), "FACEBOOK_PAGE_NAME", page_name, quote_mode="always")
+    set_key(str(ENV_PATH), "META_GRAPH_VERSION", META_GRAPH_VERSION, quote_mode="always")
+    os.environ["FACEBOOK_PAGE_ACCESS_TOKEN"] = token
+    os.environ["FACEBOOK_PAGE_ID"] = page_id
+    os.environ["FACEBOOK_PAGE_NAME"] = page_name
+    now = utc_now()
+    with connection() as db:
+        db.execute(
+            """
+            UPDATE facebook_state SET page_id = ?, page_name = ?, last_error = '', connected_at = ?, updated_at = ?
+            WHERE id = 1
+            """,
+            (page_id, page_name, now, now),
+        )
+    return facebook_status_data()
+
+
+@app.delete("/api/facebook/conexion", status_code=status.HTTP_204_NO_CONTENT)
+def disconnect_facebook(_: Annotated[str, Depends(current_user)]) -> Response:
+    for key in ("FACEBOOK_PAGE_ACCESS_TOKEN", "FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_NAME"):
+        unset_key(str(ENV_PATH), key)
+        os.environ.pop(key, None)
+    with connection() as db:
+        db.execute(
+            "UPDATE facebook_state SET page_id = '', page_name = '', last_error = '', updated_at = ? WHERE id = 1",
+            (utc_now(),),
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/facebook/sincronizar", response_model=FacebookSyncResult)
+def sync_facebook(_: Annotated[str, Depends(current_user)]) -> FacebookSyncResult:
+    page_id = os.getenv("FACEBOOK_PAGE_ID", "").strip()
+    token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "").strip()
+    if not page_id or not token:
+        raise HTTPException(status_code=400, detail="Primero conecta una página de Facebook autorizada.")
+    try:
+        result = facebook_graph_get(
+            f"{page_id}/posts",
+            token,
+            {"fields": "id,message,permalink_url,created_time,full_picture", "limit": "50"},
+        )
+    except ValueError as error:
+        message = clean_feed_text(str(error), 350)
+        with connection() as db:
+            db.execute(
+                "UPDATE facebook_state SET last_sync = ?, last_error = ?, updated_at = ? WHERE id = 1",
+                (utc_now(), message, utc_now()),
+            )
+        raise HTTPException(status_code=400, detail=f"No se pudo sincronizar Facebook: {message}") from None
+
+    posts = result.get("data") or []
+    detected = 0
+    now = utc_now()
+    with connection() as db:
+        for post in posts:
+            external_id = clean_feed_text(str(post.get("id") or ""), 180)
+            message = clean_feed_text(str(post.get("message") or ""), 12_000)
+            if not external_id or not message:
+                continue
+            cursor = db.execute(
+                """
+                INSERT OR IGNORE INTO facebook_posts (
+                    external_id, message, permalink_url, picture_url, created_time, detected_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    external_id,
+                    message,
+                    str(post.get("permalink_url") or "")[:1200],
+                    str(post.get("full_picture") or "")[:1200],
+                    str(post.get("created_time") or "") or None,
+                    now,
+                ),
+            )
+            detected += max(cursor.rowcount, 0)
+        db.execute(
+            "UPDATE facebook_state SET last_sync = ?, last_error = '', updated_at = ? WHERE id = 1",
+            (now, now),
+        )
+    return FacebookSyncResult(detected=detected, total_received=len(posts))
+
+
+@app.get("/api/facebook/publicaciones", response_model=FacebookPostList)
+def list_facebook_posts(
+    _: Annotated[str, Depends(current_user)],
+    pending_only: bool = False,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> FacebookPostList:
+    where = " WHERE imported_news_id IS NULL" if pending_only else ""
+    with connection() as db:
+        total = db.execute(f"SELECT COUNT(*) FROM facebook_posts{where}").fetchone()[0]
+        rows = db.execute(
+            f"SELECT * FROM facebook_posts{where} ORDER BY COALESCE(created_time, detected_at) DESC, id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    return FacebookPostList(items=[FacebookPost(**dict(row)) for row in rows], total=int(total))
+
+
+@app.post("/api/facebook/publicaciones/{post_id}/importar", response_model=NewsItem, status_code=status.HTTP_201_CREATED)
+def import_facebook_post(post_id: int, _: Annotated[str, Depends(current_user)]) -> NewsItem:
+    now = utc_now()
+    with connection() as db:
+        post = db.execute("SELECT * FROM facebook_posts WHERE id = ?", (post_id,)).fetchone()
+        if post is None:
+            raise HTTPException(status_code=404, detail="La publicación no existe.")
+        if post["imported_news_id"] is not None:
+            raise HTTPException(status_code=409, detail="Esta publicación ya fue importada a Noticias.")
+        page_name = os.getenv("FACEBOOK_PAGE_NAME", "Página autorizada")
+        title_source = re.split(r"(?<=[.!?])\s+|\n+", post["message"], maxsplit=1)[0]
+        title = title_source[:177].rstrip(" ,;:") + ("…" if len(title_source) > 177 else "")
+        summary = post["message"][:497].rstrip() + ("…" if len(post["message"]) > 497 else "")
+        cursor = db.execute(
+            """
+            INSERT INTO noticias (
+                title, summary, content, source, author, municipality, category,
+                priority, status, image_url, url, published_at, updated_at, is_ai, tags, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                title, summary, post["message"], f"Facebook · {page_name}", "Facebook",
+                "Tequila", "General", "Media", "Pendiente", post["picture_url"],
+                post["permalink_url"], post["created_time"], now, 0,
+                json.dumps(["facebook", "tequila"], ensure_ascii=False), now,
+            ),
+        )
+        news_id = int(cursor.lastrowid)
+        db.execute("UPDATE facebook_posts SET imported_news_id = ? WHERE id = ?", (news_id, post_id))
         row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
     return row_to_news(row)
 

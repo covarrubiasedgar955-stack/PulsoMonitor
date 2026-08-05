@@ -126,3 +126,36 @@ export interface RadarScanResult {
   detected: number;
   errors: string[];
 }
+
+export interface FacebookStatus {
+  connected: boolean;
+  page_id: string;
+  page_name: string;
+  graph_version: string;
+  last_sync: string | null;
+  last_error: string;
+  posts: number;
+  pending: number;
+  imported: number;
+}
+
+export interface FacebookPost {
+  id: number;
+  external_id: string;
+  message: string;
+  permalink_url: string;
+  picture_url: string;
+  created_time: string | null;
+  detected_at: string;
+  imported_news_id: number | null;
+}
+
+export interface FacebookPostList {
+  items: FacebookPost[];
+  total: number;
+}
+
+export interface FacebookSyncResult {
+  detected: number;
+  total_received: number;
+}
