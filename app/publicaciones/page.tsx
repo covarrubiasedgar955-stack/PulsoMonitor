@@ -169,7 +169,7 @@ export default function PublicationsPage() {
       </div>
 
       {!loading && !facebook?.connected && <div className="alert error">Primero conecta tu página en <Link href="/facebook">Facebook →</Link></div>}
-      {facebook?.connected && <div className="publication-connection"><span>f</span><div><strong>{facebook.page_name}</strong><small>Para publicar, el token debe incluir el permiso <code>pages_manage_posts</code>.</small></div></div>}
+      {facebook?.connected && <div className="publication-connection"><span>f</span><div><strong>{facebook.page_name}</strong><small>Conexión activa. Cada publicación requiere tu confirmación antes de enviarse.</small></div></div>}
       {error && <div className="alert error">{error}</div>}
       {message && <div className="alert success">{message}</div>}
 

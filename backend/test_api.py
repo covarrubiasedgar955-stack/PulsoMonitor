@@ -39,7 +39,9 @@ class PulsoMonitorApiTests(unittest.TestCase):
         temporary_directory.cleanup()
 
     def test_health_and_authentication(self):
-        self.assertEqual(self.client.get("/health").status_code, 200)
+        health = self.client.get("/health")
+        self.assertEqual(health.status_code, 200)
+        self.assertEqual(health.json()["version"], "0.7.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -74,8 +76,10 @@ class PulsoMonitorApiTests(unittest.TestCase):
                 main.init_database()
             with sqlite3.connect(legacy_path) as db:
                 columns = {row[1] for row in db.execute("PRAGMA table_info(noticias)").fetchall()}
+                tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
             self.assertIn("facebook_post_id", columns)
             self.assertIn("scheduled_at", columns)
+            self.assertIn("municipalities", tables)
 
     def test_facebook_connection_sync_and_import(self):
         def graph_response(path, _token, _params=None):
@@ -221,6 +225,57 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(result.json()["provider"], "local")
         self.assertEqual(result.json()["category"], "Seguridad")
         self.assertIn(result.json()["priority"], ["Alta", "Urgente"])
+
+    def test_municipality_crud_counts_and_news_filter(self):
+        created = self.client.post(
+            "/api/municipios",
+            headers=self.headers,
+            json={"name": "Amatitán", "region": "Valles", "state": "Jalisco", "active": True},
+        )
+        self.assertEqual(created.status_code, 201)
+        municipality_id = created.json()["id"]
+
+        payload = {
+            "title": "Actividad comunitaria en Amatitán",
+            "summary": "Resumen de cobertura municipal.",
+            "content": "La comunidad participó en una actividad informativa.",
+            "source": "Prueba municipal",
+            "author": "Pulso Tequila",
+            "municipality": "Amatitán",
+            "category": "Comunidad",
+            "priority": "Urgente",
+            "status": "Pendiente",
+            "image_url": "",
+            "url": "",
+            "published_at": None,
+            "is_ai": False,
+            "tags": ["amatitán"],
+        }
+        news = self.client.post("/api/noticias", headers=self.headers, json=payload)
+        self.assertEqual(news.status_code, 201)
+
+        municipalities = self.client.get("/api/municipios", headers=self.headers)
+        amatitan = next(item for item in municipalities.json() if item["id"] == municipality_id)
+        self.assertEqual(amatitan["news"], 1)
+        self.assertEqual(amatitan["pending"], 1)
+        self.assertEqual(amatitan["urgent"], 1)
+
+        filtered = self.client.get("/api/noticias?municipality=Amatitán", headers=self.headers)
+        self.assertEqual(filtered.status_code, 200)
+        self.assertEqual(filtered.json()["total"], 1)
+
+        renamed = self.client.put(
+            f"/api/municipios/{municipality_id}",
+            headers=self.headers,
+            json={"name": "Amatitán Centro", "region": "Valles", "state": "Jalisco", "active": False},
+        )
+        self.assertEqual(renamed.status_code, 200)
+        self.assertFalse(renamed.json()["active"])
+        renamed_news = self.client.get("/api/noticias?municipality=Amatitán Centro", headers=self.headers)
+        self.assertEqual(renamed_news.json()["total"], 1)
+
+        protected = self.client.delete(f"/api/municipios/{municipality_id}", headers=self.headers)
+        self.assertEqual(protected.status_code, 409)
 
     def test_radar_scan_avoids_duplicates_and_imports_news(self):
         source = self.client.post(
