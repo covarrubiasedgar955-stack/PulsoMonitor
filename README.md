@@ -1,4 +1,4 @@
-# Pulso Monitor v0.4
+# Pulso Monitor v0.5
 
 Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye dashboard, gestión editorial, Asistente IA, Radar de fuentes y conexión autorizada con Facebook.
 
@@ -23,6 +23,8 @@ Centro local de administración, redacción y detección de noticias para **Puls
 - Conexión con una página administrada mediante Meta Graph API v26.0.
 - Sincronización de publicaciones de Facebook sin duplicados.
 - Importación de publicaciones de Facebook como noticias pendientes.
+- Preparación inteligente de publicaciones de Facebook con título, resumen, categoría, prioridad y etiquetas sugeridas.
+- Revisión humana obligatoria antes de publicar cualquier borrador preparado por el asistente.
 
 ## Instalación rápida en Windows
 
@@ -62,7 +64,7 @@ El módulo **Facebook** se conecta mediante la API oficial de Meta y requiere:
 - El ID de una página que administras.
 - Un Page Access Token válido con los permisos aprobados para leer esa página.
 
-Pulso Monitor valida la conexión, guarda el token solamente en `backend/.env` y permite sincronizar hasta 50 publicaciones recientes por operación. No lee perfiles personales ni grupos privados y no publica automáticamente.
+Pulso Monitor valida la conexión, guarda el token solamente en `backend/.env` y permite sincronizar hasta 50 publicaciones recientes por operación. Cada publicación puede prepararse con OpenAI o con el analizador local; el resultado se guarda como borrador pendiente. No lee perfiles personales ni grupos privados y no publica automáticamente.
 
 La configuración inicial se realiza desde `Facebook` en el menú. Nunca compartas el token por chat, correo o capturas de pantalla.
 
@@ -110,4 +112,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v0.4 administra noticias, ofrece redacción asistida, detecta entradas RSS/Atom y sincroniza publicaciones de una página de Facebook autorizada. El acceso a otras páginas públicas depende de los permisos y la revisión de la aplicación de Meta. La programación y publicación automática se incorporarán en una fase posterior.
+La v0.5 administra noticias, ofrece redacción asistida, detecta entradas RSS/Atom, sincroniza publicaciones de una página de Facebook autorizada y las transforma en borradores editoriales para revisión. El acceso a otras páginas públicas depende de los permisos y la revisión de la aplicación de Meta. La programación y publicación automática se incorporarán en una fase posterior.
