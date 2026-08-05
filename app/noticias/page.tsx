@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { NewsInput, NewsItem, NewsPriority, NewsStatus } from "@/types/news";
+import type { Municipality, NewsInput, NewsItem, NewsPriority, NewsStatus } from "@/types/news";
 
 type Draft = Omit<NewsInput, "tags"> & { tags: string };
 
@@ -35,7 +35,7 @@ function statusClass(value: string) {
   return `status status-${value.toLowerCase().replaceAll(" ", "-").replace("ó", "o")}`;
 }
 
-function NewsModal({ item, onClose, onSaved }: { item: NewsItem | null; onClose: () => void; onSaved: () => void }) {
+function NewsModal({ item, municipalities, onClose, onSaved }: { item: NewsItem | null; municipalities: Municipality[]; onClose: () => void; onSaved: () => void }) {
   const [draft, setDraft] = useState<Draft>(() => item ? {
     title: item.title,
     summary: item.summary,
@@ -95,7 +95,7 @@ function NewsModal({ item, onClose, onSaved }: { item: NewsItem | null; onClose:
             <label className="full">Título *<input required maxLength={180} value={draft.title} onChange={(event) => field("title", event.target.value)} placeholder="Título de la noticia" /></label>
             <label className="full">Resumen<textarea rows={2} value={draft.summary} onChange={(event) => field("summary", event.target.value)} placeholder="Resumen breve para identificarla" /></label>
             <label className="full">Contenido<textarea rows={5} value={draft.content} onChange={(event) => field("content", event.target.value)} placeholder="Texto completo de la publicación" /></label>
-            <label>Municipio<input value={draft.municipality} onChange={(event) => field("municipality", event.target.value)} /></label>
+            <label>Municipio<input list="municipality-options" value={draft.municipality} onChange={(event) => field("municipality", event.target.value)} /><datalist id="municipality-options">{municipalities.filter((value) => value.active).map((value) => <option key={value.id} value={value.name} />)}</datalist></label>
             <label>Categoría<select value={draft.category} onChange={(event) => field("category", event.target.value)}>{categories.map((value) => <option key={value}>{value}</option>)}</select></label>
             <label>Estado<select value={draft.status} onChange={(event) => field("status", event.target.value as NewsStatus)}>{statuses.map((value) => <option key={value}>{value}</option>)}</select></label>
             <label>Prioridad<select value={draft.priority} onChange={(event) => field("priority", event.target.value as NewsPriority)}>{priorities.map((value) => <option key={value}>{value}</option>)}</select></label>
@@ -120,6 +120,8 @@ export default function NewsPage() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [priority, setPriority] = useState("");
+  const [municipality, setMunicipality] = useState("");
+  const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -131,7 +133,7 @@ export default function NewsPage() {
     setLoading(true);
     setError("");
     try {
-      const response = await api.listNews({ search, status, priority, limit: pageSize, offset: (page - 1) * pageSize });
+      const response = await api.listNews({ search, status, priority, municipality, limit: pageSize, offset: (page - 1) * pageSize });
       setItems(response.items);
       setTotal(response.total);
     } catch (caught) {
@@ -139,7 +141,16 @@ export default function NewsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, priority, search, status]);
+  }, [municipality, page, priority, search, status]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const selected = new URLSearchParams(window.location.search).get("municipio") || "";
+      setMunicipality(selected);
+      void api.listMunicipalities().then(setMunicipalities).catch(() => undefined);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(load, 250);
@@ -170,8 +181,9 @@ export default function NewsPage() {
       </div>
 
       <section className="panel">
-        <div className="filters">
+        <div className="filters news-filters">
           <label className="search-box"><span>⌕</span><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Buscar por título, fuente, municipio…" /></label>
+          <select aria-label="Filtrar por municipio" value={municipality} onChange={(event) => { setMunicipality(event.target.value); setPage(1); }}><option value="">Todos los municipios</option>{municipalities.map((value) => <option key={value.id} value={value.name}>{value.name}</option>)}</select>
           <select aria-label="Filtrar por estado" value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }}><option value="">Todos los estados</option>{statuses.map((value) => <option key={value}>{value}</option>)}</select>
           <select aria-label="Filtrar por prioridad" value={priority} onChange={(event) => { setPriority(event.target.value); setPage(1); }}><option value="">Todas las prioridades</option>{priorities.map((value) => <option key={value}>{value}</option>)}</select>
           <button className="button secondary" onClick={load}>Actualizar</button>
@@ -201,7 +213,7 @@ export default function NewsPage() {
         </div>
         <div className="pagination"><span>{total} noticia{total === 1 ? "" : "s"}</span><div><button disabled={page === 1} onClick={() => setPage((value) => value - 1)}>← Anterior</button><strong>Página {page} de {pages}</strong><button disabled={page >= pages} onClick={() => setPage((value) => value + 1)}>Siguiente →</button></div></div>
       </section>
-      {modalOpen && <NewsModal item={editing} onClose={close} onSaved={saved} />}
+      {modalOpen && <NewsModal item={editing} municipalities={municipalities} onClose={close} onSaved={saved} />}
     </main>
   );
 }
