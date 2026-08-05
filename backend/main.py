@@ -78,7 +78,10 @@ def init_database() -> None:
                 is_ai INTEGER NOT NULL DEFAULT 0,
                 tags TEXT NOT NULL DEFAULT '[]',
                 facebook_post_id TEXT NOT NULL DEFAULT '',
-                scheduled_at TEXT
+                scheduled_at TEXT,
+                location TEXT NOT NULL DEFAULT '',
+                latitude REAL,
+                longitude REAL
             )
             """
         )
@@ -87,9 +90,16 @@ def init_database() -> None:
             db.execute("ALTER TABLE noticias ADD COLUMN facebook_post_id TEXT NOT NULL DEFAULT ''")
         if "scheduled_at" not in news_columns:
             db.execute("ALTER TABLE noticias ADD COLUMN scheduled_at TEXT")
+        if "location" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN location TEXT NOT NULL DEFAULT ''")
+        if "latitude" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN latitude REAL")
+        if "longitude" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN longitude REAL")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_status ON noticias(status)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_created ON noticias(created_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_scheduled ON noticias(scheduled_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_location ON noticias(latitude, longitude)")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS radar_sources (
@@ -271,6 +281,9 @@ class NewsPayload(BaseModel):
     published_at: str | None = None
     is_ai: bool = False
     tags: list[str] = Field(default_factory=list)
+    location: str = Field(default="", max_length=180)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
 
     @field_validator("title")
     @classmethod
@@ -287,6 +300,38 @@ class NewsItem(NewsPayload):
     updated_at: str
     facebook_post_id: str = ""
     scheduled_at: str | None = None
+
+
+class NewsLocationRequest(BaseModel):
+    location: str = Field(default="", max_length=180)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+class MapIncident(BaseModel):
+    id: int
+    title: str
+    summary: str
+    municipality: str
+    category: str
+    priority: NewsPriority
+    status: NewsStatus
+    location: str
+    latitude: float
+    longitude: float
+    created_at: str
+
+
+class MapIncidentList(BaseModel):
+    items: list[MapIncident]
+    total: int
+
+
+class MapStats(BaseModel):
+    news: int
+    mapped: int
+    unmapped: int
+    urgent: int
 
 
 class NewsList(BaseModel):
@@ -584,7 +629,8 @@ def news_values(payload: NewsPayload, updated_at: str) -> tuple:
         payload.title, payload.summary, payload.content, payload.source, payload.author,
         payload.municipality, payload.category, payload.priority, payload.status,
         payload.image_url, payload.url, published_at, updated_at, int(payload.is_ai),
-        json.dumps(payload.tags, ensure_ascii=False),
+        json.dumps(payload.tags, ensure_ascii=False), payload.location.strip(),
+        payload.latitude, payload.longitude,
     )
 
 
@@ -774,7 +820,7 @@ def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = No
     query = {**(params or {}), "access_token": token}
     url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
     try:
-        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.7"})
+        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.8"})
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
         raise ValueError("No fue posible comunicarse con Meta.") from error
@@ -792,7 +838,7 @@ def facebook_graph_post(path: str, token: str, params: dict[str, str]) -> dict:
             url,
             data={**params, "access_token": token},
             timeout=25,
-            headers={"User-Agent": "PulsoMonitor/0.7"},
+            headers={"User-Agent": "PulsoMonitor/0.8"},
         )
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
@@ -811,7 +857,7 @@ def facebook_graph_delete(path: str, token: str) -> dict:
             url,
             data={"access_token": token},
             timeout=25,
-            headers={"User-Agent": "PulsoMonitor/0.7"},
+            headers={"User-Agent": "PulsoMonitor/0.8"},
         )
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
@@ -879,8 +925,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="0.7.0",
-    description="API local para administrar cobertura, preparar, programar y publicar noticias.",
+    version="0.8.0",
+    description="API local para administrar cobertura, mapa, preparación y publicación de noticias.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -898,7 +944,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.7.0"}
+    return {"status": "ok", "version": "0.8.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -1493,6 +1539,56 @@ def list_news(
     return NewsList(items=[row_to_news(row) for row in rows], total=total)
 
 
+@app.get("/api/mapa/estadisticas", response_model=MapStats)
+def map_statistics(_: Annotated[str, Depends(current_user)]) -> MapStats:
+    with connection() as db:
+        row = db.execute(
+            """
+            SELECT COUNT(*) AS news,
+                   SUM(CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL THEN 1 ELSE 0 END) AS mapped,
+                   SUM(CASE WHEN latitude IS NULL OR longitude IS NULL THEN 1 ELSE 0 END) AS unmapped,
+                   SUM(CASE WHEN priority = 'Urgente' AND latitude IS NOT NULL AND longitude IS NOT NULL THEN 1 ELSE 0 END) AS urgent
+            FROM noticias WHERE status != 'Archivada'
+            """
+        ).fetchone()
+    return MapStats(**{key: int(row[key] or 0) for key in ("news", "mapped", "unmapped", "urgent")})
+
+
+@app.get("/api/mapa/incidencias", response_model=MapIncidentList)
+def list_map_incidents(
+    _: Annotated[str, Depends(current_user)],
+    status_filter: Annotated[str, Query(alias="status")] = "",
+    priority: str = "",
+    municipality: str = "",
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+) -> MapIncidentList:
+    clauses = ["latitude IS NOT NULL", "longitude IS NOT NULL", "status != 'Archivada'"]
+    values: list[object] = []
+    if status_filter:
+        clauses.append("status = ?")
+        values.append(status_filter)
+    if priority:
+        clauses.append("priority = ?")
+        values.append(priority)
+    if municipality:
+        clauses.append("TRIM(municipality) = ? COLLATE NOCASE")
+        values.append(municipality.strip())
+    where = " AND ".join(clauses)
+    with connection() as db:
+        total = db.execute(f"SELECT COUNT(*) FROM noticias WHERE {where}", values).fetchone()[0]
+        rows = db.execute(
+            f"""
+            SELECT id, title, summary, municipality, category, priority, status,
+                   location, latitude, longitude, created_at
+            FROM noticias WHERE {where}
+            ORDER BY CASE priority WHEN 'Urgente' THEN 0 WHEN 'Alta' THEN 1 ELSE 2 END,
+                     created_at DESC, id DESC LIMIT ?
+            """,
+            [*values, limit],
+        ).fetchall()
+    return MapIncidentList(items=[MapIncident(**dict(row)) for row in rows], total=total)
+
+
 @app.get("/api/noticias/{news_id}", response_model=NewsItem)
 def get_news(news_id: int, _: Annotated[str, Depends(current_user)]) -> NewsItem:
     with connection() as db:
@@ -1500,6 +1596,44 @@ def get_news(news_id: int, _: Annotated[str, Depends(current_user)]) -> NewsItem
     if row is None:
         raise HTTPException(status_code=404, detail="La noticia no existe.")
     return row_to_news(row)
+
+
+@app.put("/api/noticias/{news_id}/ubicacion", response_model=NewsItem)
+def set_news_location(
+    news_id: int,
+    payload: NewsLocationRequest,
+    _: Annotated[str, Depends(current_user)],
+) -> NewsItem:
+    now = utc_now()
+    with connection() as db:
+        current = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="La noticia no existe.")
+        location = payload.location.strip() or current["municipality"]
+        db.execute(
+            """
+            UPDATE noticias SET location = ?, latitude = ?, longitude = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (location, payload.latitude, payload.longitude, now, news_id),
+        )
+        updated = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    return row_to_news(updated)
+
+
+@app.delete("/api/noticias/{news_id}/ubicacion", response_model=NewsItem)
+def clear_news_location(news_id: int, _: Annotated[str, Depends(current_user)]) -> NewsItem:
+    now = utc_now()
+    with connection() as db:
+        current = db.execute("SELECT id FROM noticias WHERE id = ?", (news_id,)).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="La noticia no existe.")
+        db.execute(
+            "UPDATE noticias SET location = '', latitude = NULL, longitude = NULL, updated_at = ? WHERE id = ?",
+            (now, news_id),
+        )
+        updated = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    return row_to_news(updated)
 
 
 @app.post("/api/noticias", response_model=NewsItem, status_code=status.HTTP_201_CREATED)
@@ -1510,8 +1644,9 @@ def create_news(payload: NewsPayload, _: Annotated[str, Depends(current_user)]) 
             """
             INSERT INTO noticias (
                 title, summary, content, source, author, municipality, category,
-                priority, status, image_url, url, published_at, updated_at, is_ai, tags, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                priority, status, image_url, url, published_at, updated_at, is_ai, tags,
+                location, latitude, longitude, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (*news_values(payload, now), now),
         )
@@ -1541,7 +1676,7 @@ def update_news(news_id: int, payload: NewsPayload, _: Annotated[str, Depends(cu
             UPDATE noticias SET
                 title = ?, summary = ?, content = ?, source = ?, author = ?, municipality = ?,
                 category = ?, priority = ?, status = ?, image_url = ?, url = ?, published_at = ?,
-                updated_at = ?, is_ai = ?, tags = ?
+                updated_at = ?, is_ai = ?, tags = ?, location = ?, latitude = ?, longitude = ?
             WHERE id = ?
             """,
             (*news_values(payload, now), news_id),
