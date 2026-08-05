@@ -127,6 +127,43 @@ def init_database() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_imported ON radar_items(imported_news_id)")
         db.execute(
             """
+            CREATE TABLE IF NOT EXISTS municipalities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                region TEXT NOT NULL DEFAULT 'Valles',
+                state TEXT NOT NULL DEFAULT 'Jalisco',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        now = utc_now()
+        db.execute(
+            """
+            INSERT OR IGNORE INTO municipalities (name, region, state, active, created_at, updated_at)
+            VALUES ('Tequila', 'Valles', 'Jalisco', 1, ?, ?)
+            """,
+            (now, now),
+        )
+        db.execute(
+            """
+            INSERT OR IGNORE INTO municipalities (name, region, state, active, created_at, updated_at)
+            SELECT DISTINCT TRIM(municipality), 'Valles', 'Jalisco', 1, ?, ?
+            FROM noticias WHERE TRIM(municipality) != ''
+            """,
+            (now, now),
+        )
+        db.execute(
+            """
+            INSERT OR IGNORE INTO municipalities (name, region, state, active, created_at, updated_at)
+            SELECT DISTINCT TRIM(municipality), 'Valles', 'Jalisco', 1, ?, ?
+            FROM radar_sources WHERE TRIM(municipality) != ''
+            """,
+            (now, now),
+        )
+        db.execute(
+            """
             CREATE TABLE IF NOT EXISTS facebook_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 page_id TEXT NOT NULL DEFAULT '',
@@ -263,6 +300,32 @@ class NewsStats(BaseModel):
     published: int
     urgent: int
     total: int
+
+
+class MunicipalityPayload(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    region: str = Field(default="Valles", max_length=100)
+    state: str = Field(default="Jalisco", max_length=100)
+    active: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, value: str) -> str:
+        cleaned = re.sub(r"\s+", " ", value).strip()
+        if len(cleaned) < 2:
+            raise ValueError("El nombre debe contener al menos 2 caracteres.")
+        return cleaned
+
+
+class Municipality(MunicipalityPayload):
+    id: int
+    created_at: str
+    updated_at: str
+    news: int = 0
+    pending: int = 0
+    published: int = 0
+    urgent: int = 0
+    radar_sources: int = 0
 
 
 class AIAnalyzeRequest(BaseModel):
@@ -473,6 +536,46 @@ def row_to_news(row: sqlite3.Row) -> NewsItem:
     return NewsItem(**data)
 
 
+def sync_municipalities(db: sqlite3.Connection) -> None:
+    now = utc_now()
+    for table in ("noticias", "radar_sources"):
+        db.execute(
+            f"""
+            INSERT OR IGNORE INTO municipalities (name, region, state, active, created_at, updated_at)
+            SELECT DISTINCT TRIM(municipality), 'Valles', 'Jalisco', 1, ?, ?
+            FROM {table} WHERE TRIM(municipality) != ''
+            """,
+            (now, now),
+        )
+
+
+def row_to_municipality(row: sqlite3.Row) -> Municipality:
+    data = dict(row)
+    data["active"] = bool(data["active"])
+    for key in ("news", "pending", "published", "urgent", "radar_sources"):
+        data[key] = int(data.get(key) or 0)
+    return Municipality(**data)
+
+
+MUNICIPALITY_SELECT = """
+    SELECT m.*,
+           (SELECT COUNT(*) FROM noticias n WHERE TRIM(n.municipality) = m.name COLLATE NOCASE) AS news,
+           (SELECT COUNT(*) FROM noticias n WHERE TRIM(n.municipality) = m.name COLLATE NOCASE
+                AND n.status IN ('Pendiente', 'En revisión')) AS pending,
+           (SELECT COUNT(*) FROM noticias n WHERE TRIM(n.municipality) = m.name COLLATE NOCASE
+                AND n.status = 'Publicada') AS published,
+           (SELECT COUNT(*) FROM noticias n WHERE TRIM(n.municipality) = m.name COLLATE NOCASE
+                AND n.priority = 'Urgente' AND n.status != 'Archivada') AS urgent,
+           (SELECT COUNT(*) FROM radar_sources r WHERE TRIM(r.municipality) = m.name COLLATE NOCASE) AS radar_sources
+    FROM municipalities m
+"""
+
+
+def municipality_by_id(db: sqlite3.Connection, municipality_id: int) -> Municipality | None:
+    row = db.execute(f"{MUNICIPALITY_SELECT} WHERE m.id = ?", (municipality_id,)).fetchone()
+    return row_to_municipality(row) if row else None
+
+
 def news_values(payload: NewsPayload, updated_at: str) -> tuple:
     published_at = payload.published_at
     if payload.status == "Publicada" and not published_at:
@@ -671,7 +774,7 @@ def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = No
     query = {**(params or {}), "access_token": token}
     url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
     try:
-        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.6"})
+        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.7"})
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
         raise ValueError("No fue posible comunicarse con Meta.") from error
@@ -689,7 +792,7 @@ def facebook_graph_post(path: str, token: str, params: dict[str, str]) -> dict:
             url,
             data={**params, "access_token": token},
             timeout=25,
-            headers={"User-Agent": "PulsoMonitor/0.6"},
+            headers={"User-Agent": "PulsoMonitor/0.7"},
         )
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
@@ -708,7 +811,7 @@ def facebook_graph_delete(path: str, token: str) -> dict:
             url,
             data={"access_token": token},
             timeout=25,
-            headers={"User-Agent": "PulsoMonitor/0.6"},
+            headers={"User-Agent": "PulsoMonitor/0.7"},
         )
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
@@ -776,8 +879,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="0.6.0",
-    description="API local para administrar, preparar, programar y publicar noticias.",
+    version="0.7.0",
+    description="API local para administrar cobertura, preparar, programar y publicar noticias.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -795,7 +898,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.6.0"}
+    return {"status": "ok", "version": "0.7.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -837,6 +940,115 @@ def configure_ai(payload: AIConfigRequest, _: Annotated[str, Depends(current_use
 @app.post("/api/ia/analizar", response_model=AIAnalysis)
 def analyze_with_ai(payload: AIAnalyzeRequest, _: Annotated[str, Depends(current_user)]) -> AIAnalysis:
     return openai_ai_analysis(payload)
+
+
+@app.get("/api/municipios", response_model=list[Municipality])
+def list_municipalities(_: Annotated[str, Depends(current_user)]) -> list[Municipality]:
+    with connection() as db:
+        sync_municipalities(db)
+        rows = db.execute(
+            f"""
+            {MUNICIPALITY_SELECT}
+            ORDER BY m.active DESC,
+                     CASE WHEN m.name = 'Tequila' COLLATE NOCASE THEN 0 ELSE 1 END,
+                     m.name COLLATE NOCASE
+            """
+        ).fetchall()
+    return [row_to_municipality(row) for row in rows]
+
+
+@app.post("/api/municipios", response_model=Municipality, status_code=status.HTTP_201_CREATED)
+def create_municipality(payload: MunicipalityPayload, _: Annotated[str, Depends(current_user)]) -> Municipality:
+    now = utc_now()
+    try:
+        with connection() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO municipalities (name, region, state, active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload.name,
+                    payload.region.strip() or "Valles",
+                    payload.state.strip() or "Jalisco",
+                    int(payload.active),
+                    now,
+                    now,
+                ),
+            )
+            result = municipality_by_id(db, int(cursor.lastrowid))
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Ese municipio o zona ya está registrado.") from None
+    if result is None:
+        raise HTTPException(status_code=500, detail="No fue posible recuperar el municipio guardado.")
+    return result
+
+
+@app.put("/api/municipios/{municipality_id}", response_model=Municipality)
+def update_municipality(
+    municipality_id: int,
+    payload: MunicipalityPayload,
+    _: Annotated[str, Depends(current_user)],
+) -> Municipality:
+    now = utc_now()
+    try:
+        with connection() as db:
+            previous = db.execute("SELECT * FROM municipalities WHERE id = ?", (municipality_id,)).fetchone()
+            if previous is None:
+                raise HTTPException(status_code=404, detail="Municipio no encontrado.")
+            db.execute(
+                """
+                UPDATE municipalities
+                SET name = ?, region = ?, state = ?, active = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    payload.name,
+                    payload.region.strip() or "Valles",
+                    payload.state.strip() or "Jalisco",
+                    int(payload.active),
+                    now,
+                    municipality_id,
+                ),
+            )
+            if previous["name"].casefold() != payload.name.casefold():
+                db.execute(
+                    "UPDATE noticias SET municipality = ?, updated_at = ? WHERE TRIM(municipality) = ? COLLATE NOCASE",
+                    (payload.name, now, previous["name"]),
+                )
+                db.execute(
+                    "UPDATE radar_sources SET municipality = ?, updated_at = ? WHERE TRIM(municipality) = ? COLLATE NOCASE",
+                    (payload.name, now, previous["name"]),
+                )
+            result = municipality_by_id(db, municipality_id)
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Ese municipio o zona ya está registrado.") from None
+    if result is None:
+        raise HTTPException(status_code=404, detail="Municipio no encontrado.")
+    return result
+
+
+@app.delete("/api/municipios/{municipality_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_municipality(municipality_id: int, _: Annotated[str, Depends(current_user)]) -> Response:
+    with connection() as db:
+        row = db.execute("SELECT * FROM municipalities WHERE id = ?", (municipality_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Municipio no encontrado.")
+        news = db.execute(
+            "SELECT COUNT(*) FROM noticias WHERE TRIM(municipality) = ? COLLATE NOCASE",
+            (row["name"],),
+        ).fetchone()[0]
+        sources = db.execute(
+            "SELECT COUNT(*) FROM radar_sources WHERE TRIM(municipality) = ? COLLATE NOCASE",
+            (row["name"],),
+        ).fetchone()[0]
+        if news or sources:
+            raise HTTPException(
+                status_code=409,
+                detail="Este municipio ya tiene noticias o fuentes. Puedes desactivarlo para conservar su historial.",
+            )
+        db.execute("DELETE FROM municipalities WHERE id = ?", (municipality_id,))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/api/radar/estadisticas", response_model=RadarStats)
@@ -1249,6 +1461,7 @@ def list_news(
     status_filter: Annotated[str, Query(alias="status")] = "",
     priority: str = "",
     category: str = "",
+    municipality: str = "",
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> NewsList:
@@ -1267,6 +1480,9 @@ def list_news(
     if category:
         clauses.append("category = ?")
         values.append(category)
+    if municipality:
+        clauses.append("TRIM(municipality) = ? COLLATE NOCASE")
+        values.append(municipality.strip())
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     with connection() as db:
         total = db.execute(f"SELECT COUNT(*) FROM noticias{where}", values).fetchone()[0]
