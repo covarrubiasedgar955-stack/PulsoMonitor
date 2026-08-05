@@ -1,7 +1,9 @@
 import os
 import secrets
+import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -40,6 +42,40 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/health").status_code, 200)
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
+
+    def test_database_migrates_publication_columns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            legacy_path = Path(directory) / "legacy.db"
+            with sqlite3.connect(legacy_path) as db:
+                db.execute(
+                    """
+                    CREATE TABLE noticias (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title TEXT NOT NULL,
+                        summary TEXT NOT NULL DEFAULT '',
+                        content TEXT NOT NULL DEFAULT '',
+                        source TEXT NOT NULL DEFAULT 'Manual',
+                        author TEXT NOT NULL DEFAULT '',
+                        municipality TEXT NOT NULL DEFAULT 'Tequila',
+                        category TEXT NOT NULL DEFAULT 'General',
+                        priority TEXT NOT NULL DEFAULT 'Media',
+                        status TEXT NOT NULL DEFAULT 'Pendiente',
+                        image_url TEXT NOT NULL DEFAULT '',
+                        url TEXT NOT NULL DEFAULT '',
+                        published_at TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        is_ai INTEGER NOT NULL DEFAULT 0,
+                        tags TEXT NOT NULL DEFAULT '[]'
+                    )
+                    """
+                )
+            with patch.object(main, "DATABASE_PATH", legacy_path):
+                main.init_database()
+            with sqlite3.connect(legacy_path) as db:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(noticias)").fetchall()}
+            self.assertIn("facebook_post_id", columns)
+            self.assertIn("scheduled_at", columns)
 
     def test_facebook_connection_sync_and_import(self):
         def graph_response(path, _token, _params=None):
@@ -112,6 +148,63 @@ class PulsoMonitorApiTests(unittest.TestCase):
         updated = self.client.put(f"/api/noticias/{news_id}", headers=self.headers, json=payload)
         self.assertEqual(updated.json()["status"], "Publicada")
         self.assertEqual(self.client.delete(f"/api/noticias/{news_id}", headers=self.headers).status_code, 204)
+
+    def test_publish_and_schedule_facebook_news(self):
+        os.environ["FACEBOOK_PAGE_ID"] = "123456"
+        os.environ["FACEBOOK_PAGE_NAME"] = "Pulso Tequila"
+        os.environ["FACEBOOK_PAGE_ACCESS_TOKEN"] = "EAAB" + "x" * 40
+        payload = {
+            "title": "Información lista para publicarse",
+            "summary": "Resumen editorial revisado.",
+            "content": "Este es el contenido que fue revisado antes de enviarse a la página.",
+            "source": "Redacción",
+            "author": "Pulso Tequila",
+            "municipality": "Tequila",
+            "category": "Comunidad",
+            "priority": "Media",
+            "status": "Pendiente",
+            "image_url": "",
+            "url": "",
+            "published_at": None,
+            "is_ai": True,
+            "tags": ["tequila", "comunidad"],
+        }
+
+        immediate_news = self.client.post("/api/noticias", headers=self.headers, json=payload).json()
+        with patch.object(main, "facebook_graph_post", return_value={"id": "123456_900"}) as publish_mock:
+            published = self.client.post(
+                f"/api/noticias/{immediate_news['id']}/publicar-facebook",
+                headers=self.headers,
+                json={"scheduled_at": None},
+            )
+        self.assertEqual(published.status_code, 200)
+        self.assertFalse(published.json()["scheduled"])
+        self.assertEqual(published.json()["news"]["status"], "Publicada")
+        self.assertEqual(published.json()["news"]["facebook_post_id"], "123456_900")
+        self.assertIn("#PulsoTequila", publish_mock.call_args.args[2]["message"])
+
+        scheduled_news = self.client.post("/api/noticias", headers=self.headers, json=payload).json()
+        future = (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat()
+        with patch.object(main, "facebook_graph_post", return_value={"id": "123456_901"}) as schedule_mock:
+            scheduled = self.client.post(
+                f"/api/noticias/{scheduled_news['id']}/publicar-facebook",
+                headers=self.headers,
+                json={"scheduled_at": future},
+            )
+        self.assertEqual(scheduled.status_code, 200)
+        self.assertTrue(scheduled.json()["scheduled"])
+        self.assertEqual(scheduled.json()["news"]["status"], "Programada")
+        self.assertEqual(schedule_mock.call_args.args[2]["published"], "false")
+        self.assertIn("scheduled_publish_time", schedule_mock.call_args.args[2])
+
+        with patch.object(main, "facebook_graph_delete", return_value={"success": True}):
+            cancelled = self.client.delete(
+                f"/api/noticias/{scheduled_news['id']}/programacion-facebook",
+                headers=self.headers,
+            )
+        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(cancelled.json()["status"], "Pendiente")
+        self.assertEqual(cancelled.json()["facebook_post_id"], "")
 
     def test_local_ai_analysis(self):
         result = self.client.post(

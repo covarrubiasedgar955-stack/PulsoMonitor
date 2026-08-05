@@ -182,17 +182,18 @@ export default function NewsPage() {
           <table>
             <thead><tr><th>Noticia</th><th>Municipio</th><th>Categoría</th><th>Prioridad</th><th>Estado</th><th>Fecha</th><th>Acciones</th></tr></thead>
             <tbody>
-              {items.map((item) => (
-                <tr key={item.id}>
+              {items.map((item) => {
+                const lockedByFacebook = Boolean(item.facebook_post_id);
+                return <tr key={item.id}>
                   <td className="news-cell"><strong>{item.title}</strong><small>{item.summary || item.source}</small></td>
                   <td>{item.municipality}</td>
                   <td><span className="tag">{item.category}</span></td>
                   <td><span className={`priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span></td>
                   <td><span className={statusClass(item.status)}>{item.status}</span></td>
                   <td>{dateTime(item.created_at)}</td>
-                  <td><div className="row-actions"><button onClick={() => edit(item)} title="Editar">Editar</button><button className="danger" onClick={() => remove(item)} title="Eliminar">Eliminar</button></div></td>
+                  <td><div className="row-actions"><button disabled={lockedByFacebook} onClick={() => edit(item)} title={lockedByFacebook ? "La noticia ya está enviada a Facebook" : "Editar"}>Editar</button><button disabled={lockedByFacebook} className="danger" onClick={() => remove(item)} title={lockedByFacebook ? "La noticia se conserva como historial" : "Eliminar"}>Eliminar</button></div></td>
                 </tr>
-              ))}
+              })}
               {loading && <tr><td colSpan={7} className="empty">Cargando noticias…</td></tr>}
               {!loading && items.length === 0 && <tr><td colSpan={7} className="empty"><strong>No encontramos noticias.</strong><span>Cambia los filtros o agrega la primera noticia.</span></td></tr>}
             </tbody>

@@ -13,7 +13,7 @@ import socket
 import sqlite3
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 from typing import Annotated, Literal
@@ -76,12 +76,20 @@ def init_database() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 is_ai INTEGER NOT NULL DEFAULT 0,
-                tags TEXT NOT NULL DEFAULT '[]'
+                tags TEXT NOT NULL DEFAULT '[]',
+                facebook_post_id TEXT NOT NULL DEFAULT '',
+                scheduled_at TEXT
             )
             """
         )
+        news_columns = {row["name"] for row in db.execute("PRAGMA table_info(noticias)").fetchall()}
+        if "facebook_post_id" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN facebook_post_id TEXT NOT NULL DEFAULT ''")
+        if "scheduled_at" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN scheduled_at TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_status ON noticias(status)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_created ON noticias(created_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_scheduled ON noticias(scheduled_at)")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS radar_sources (
@@ -240,6 +248,8 @@ class NewsItem(NewsPayload):
     id: int
     created_at: str
     updated_at: str
+    facebook_post_id: str = ""
+    scheduled_at: str | None = None
 
 
 class NewsList(BaseModel):
@@ -401,6 +411,23 @@ class FacebookPrepareResult(BaseModel):
     model: str | None = None
     confidence: int = Field(ge=0, le=100)
     warnings: list[str] = Field(default_factory=list)
+
+
+class FacebookPublishRequest(BaseModel):
+    scheduled_at: datetime | None = None
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def scheduled_time_has_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("La fecha programada debe incluir zona horaria.")
+        return value
+
+
+class FacebookPublishResult(BaseModel):
+    news: NewsItem
+    facebook_post_id: str
+    scheduled: bool
 
 
 def b64url(data: bytes) -> str:
@@ -644,7 +671,7 @@ def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = No
     query = {**(params or {}), "access_token": token}
     url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
     try:
-        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.5"})
+        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.6"})
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
         raise ValueError("No fue posible comunicarse con Meta.") from error
@@ -653,6 +680,65 @@ def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = No
         message = clean_feed_text(str(api_error.get("message") or "Meta rechazó la solicitud."), 350)
         raise ValueError(message)
     return data
+
+
+def facebook_graph_post(path: str, token: str, params: dict[str, str]) -> dict:
+    url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
+    try:
+        response = httpx.post(
+            url,
+            data={**params, "access_token": token},
+            timeout=25,
+            headers={"User-Agent": "PulsoMonitor/0.6"},
+        )
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as error:
+        raise ValueError("No fue posible comunicarse con Meta.") from error
+    if not response.is_success or data.get("error"):
+        api_error = data.get("error") or {}
+        message = clean_feed_text(str(api_error.get("message") or "Meta rechazó la publicación."), 350)
+        raise ValueError(message)
+    return data
+
+
+def facebook_graph_delete(path: str, token: str) -> dict:
+    url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
+    try:
+        response = httpx.delete(
+            url,
+            data={"access_token": token},
+            timeout=25,
+            headers={"User-Agent": "PulsoMonitor/0.6"},
+        )
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as error:
+        raise ValueError("No fue posible comunicarse con Meta.") from error
+    if not response.is_success or data.get("error"):
+        api_error = data.get("error") or {}
+        message = clean_feed_text(str(api_error.get("message") or "Meta rechazó la solicitud."), 350)
+        raise ValueError(message)
+    return data
+
+
+def facebook_message_for_news(row: sqlite3.Row) -> str:
+    title = str(row["title"] or "").strip()
+    body = str(row["content"] or row["summary"] or "").strip()
+    parts = [title]
+    if body and not body.casefold().startswith(title.casefold()):
+        parts.append(body)
+    try:
+        raw_tags = json.loads(row["tags"] or "[]")
+    except json.JSONDecodeError:
+        raw_tags = []
+    hashtags = ["PulsoTequila"]
+    for tag in raw_tags:
+        cleaned = re.sub(r"[^\w]", "", str(tag), flags=re.UNICODE)
+        if cleaned and cleaned.casefold() not in {value.casefold() for value in hashtags}:
+            hashtags.append(cleaned)
+        if len(hashtags) == 5:
+            break
+    parts.append(" ".join(f"#{tag}" for tag in hashtags))
+    return "\n\n".join(part for part in parts if part).strip()[:60_000]
 
 
 def facebook_status_data() -> FacebookStatus:
@@ -690,8 +776,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="0.5.0",
-    description="API local para administrar, analizar y preparar noticias desde fuentes autorizadas.",
+    version="0.6.0",
+    description="API local para administrar, preparar, programar y publicar noticias.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -709,7 +795,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.5.0"}
+    return {"status": "ok", "version": "0.6.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -1221,9 +1307,19 @@ def create_news(payload: NewsPayload, _: Annotated[str, Depends(current_user)]) 
 def update_news(news_id: int, payload: NewsPayload, _: Annotated[str, Depends(current_user)]) -> NewsItem:
     now = utc_now()
     with connection() as db:
-        exists = db.execute("SELECT id FROM noticias WHERE id = ?", (news_id,)).fetchone()
+        exists = db.execute("SELECT id, status, facebook_post_id FROM noticias WHERE id = ?", (news_id,)).fetchone()
         if exists is None:
             raise HTTPException(status_code=404, detail="La noticia no existe.")
+        if exists["status"] == "Programada" and exists["facebook_post_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Cancela primero la programación en Facebook antes de editar la noticia.",
+            )
+        if exists["status"] == "Publicada" and exists["facebook_post_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Esta noticia ya fue publicada en Facebook y se conserva como historial.",
+            )
         db.execute(
             """
             UPDATE noticias SET
@@ -1238,9 +1334,129 @@ def update_news(news_id: int, payload: NewsPayload, _: Annotated[str, Depends(cu
     return row_to_news(row)
 
 
+@app.post("/api/noticias/{news_id}/publicar-facebook", response_model=FacebookPublishResult)
+def publish_news_to_facebook(
+    news_id: int,
+    payload: FacebookPublishRequest,
+    _: Annotated[str, Depends(current_user)],
+) -> FacebookPublishResult:
+    page_id = os.getenv("FACEBOOK_PAGE_ID", "").strip()
+    token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "").strip()
+    if not page_id or not token:
+        raise HTTPException(status_code=400, detail="Primero conecta la página en el módulo Facebook.")
+
+    with connection() as db:
+        row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="La noticia no existe.")
+    if row["facebook_post_id"]:
+        action = "programada" if row["status"] == "Programada" else "publicada"
+        raise HTTPException(status_code=409, detail=f"Esta noticia ya está {action} en Facebook.")
+    if row["status"] == "Archivada":
+        raise HTTPException(status_code=409, detail="Una noticia archivada no se puede publicar.")
+
+    message = facebook_message_for_news(row)
+    if len(message) < 3:
+        raise HTTPException(status_code=400, detail="La noticia no tiene contenido suficiente para publicarse.")
+
+    now_dt = datetime.now(timezone.utc)
+    params = {"message": message}
+    scheduled_at: str | None = None
+    target_status: NewsStatus = "Publicada"
+    published_at: str | None = now_dt.isoformat(timespec="seconds")
+    if payload.scheduled_at is not None:
+        scheduled_dt = payload.scheduled_at.astimezone(timezone.utc)
+        if scheduled_dt < now_dt + timedelta(minutes=10):
+            raise HTTPException(status_code=400, detail="Programa la publicación al menos 10 minutos después de la hora actual.")
+        if scheduled_dt > now_dt + timedelta(days=75):
+            raise HTTPException(status_code=400, detail="Meta permite programar publicaciones hasta con 75 días de anticipación.")
+        params.update({
+            "published": "false",
+            "scheduled_publish_time": str(int(scheduled_dt.timestamp())),
+        })
+        scheduled_at = scheduled_dt.isoformat(timespec="seconds")
+        target_status = "Programada"
+        published_at = None
+
+    try:
+        result = facebook_graph_post(f"{page_id}/feed", token, params)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Meta no permitió publicar: {clean_feed_text(str(error), 350)} "
+                "Verifica que el Page Access Token incluya pages_manage_posts."
+            ),
+        ) from None
+
+    facebook_post_id = clean_feed_text(str(result.get("id") or ""), 180)
+    if not facebook_post_id:
+        raise HTTPException(status_code=502, detail="Meta aceptó la solicitud, pero no devolvió el identificador de la publicación.")
+
+    now = utc_now()
+    with connection() as db:
+        db.execute(
+            """
+            UPDATE noticias SET status = ?, facebook_post_id = ?, scheduled_at = ?,
+                published_at = ?, updated_at = ? WHERE id = ?
+            """,
+            (target_status, facebook_post_id, scheduled_at, published_at, now, news_id),
+        )
+        updated = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    return FacebookPublishResult(
+        news=row_to_news(updated),
+        facebook_post_id=facebook_post_id,
+        scheduled=scheduled_at is not None,
+    )
+
+
+@app.delete("/api/noticias/{news_id}/programacion-facebook", response_model=NewsItem)
+def cancel_facebook_schedule(news_id: int, _: Annotated[str, Depends(current_user)]) -> NewsItem:
+    token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="La página de Facebook no está conectada.")
+    with connection() as db:
+        row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="La noticia no existe.")
+    if row["status"] != "Programada" or not row["facebook_post_id"]:
+        raise HTTPException(status_code=409, detail="Esta noticia no tiene una programación activa en Facebook.")
+
+    try:
+        facebook_graph_delete(row["facebook_post_id"], token)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se pudo cancelar en Meta: {clean_feed_text(str(error), 350)}",
+        ) from None
+
+    now = utc_now()
+    with connection() as db:
+        db.execute(
+            """
+            UPDATE noticias SET status = 'Pendiente', facebook_post_id = '', scheduled_at = NULL,
+                published_at = NULL, updated_at = ? WHERE id = ?
+            """,
+            (now, news_id),
+        )
+        updated = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    return row_to_news(updated)
+
+
 @app.delete("/api/noticias/{news_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_news(news_id: int, _: Annotated[str, Depends(current_user)]) -> Response:
     with connection() as db:
+        existing = db.execute("SELECT status, facebook_post_id FROM noticias WHERE id = ?", (news_id,)).fetchone()
+        if existing is not None and existing["status"] == "Programada" and existing["facebook_post_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Cancela primero la programación en Facebook antes de eliminar la noticia.",
+            )
+        if existing is not None and existing["status"] == "Publicada" and existing["facebook_post_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Esta noticia ya fue publicada en Facebook y se conserva como historial.",
+            )
         cursor = db.execute("DELETE FROM noticias WHERE id = ?", (news_id,))
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="La noticia no existe.")
