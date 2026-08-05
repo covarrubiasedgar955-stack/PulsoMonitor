@@ -1,4 +1,4 @@
-# Pulso Monitor v0.6
+# Pulso Monitor v0.7
 
 Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye dashboard, gestión editorial, Asistente IA, Radar de fuentes y conexión autorizada con Facebook.
 
@@ -28,6 +28,10 @@ Centro local de administración, redacción y detección de noticias para **Puls
 - Cola editorial para aprobar y publicar noticias en una página de Facebook conectada.
 - Programación administrada por Meta entre 10 minutos y 75 días.
 - Cancelación segura de publicaciones programadas antes de su salida.
+- Catálogo de municipios y zonas de cobertura.
+- Conteos de noticias, pendientes, publicadas, urgentes y fuentes por municipio.
+- Filtro exacto de Noticias por municipio.
+- Incorporación automática de las zonas ya utilizadas en Noticias o Radar.
 
 ## Instalación rápida en Windows
 
@@ -81,6 +85,12 @@ Para publicar desde Pulso Monitor, el Page Access Token debe incluir estos permi
 
 El módulo **Publicaciones** muestra las noticias listas para aprobación. Puedes publicar inmediatamente o elegir una fecha y hora; la programación queda registrada directamente en Meta, por lo que funciona aunque cierres Pulso Monitor. Antes de enviar contenido debes marcar una confirmación de revisión. Una noticia programada debe cancelarse antes de editarse o eliminarse.
 
+## Municipios
+
+El módulo **Municipios** concentra la cobertura editorial de Pulso Tequila. Permite agregar, editar, activar o desactivar municipios y comunidades, consultar sus indicadores y abrir directamente las noticias de una zona. Si un municipio ya tiene noticias o fuentes, se conserva como historial y debe desactivarse en lugar de eliminarse.
+
+Los nombres usados previamente en Noticias y Radar se incorporan automáticamente, por lo que la actualización no pierde ni modifica el contenido existente.
+
 ## Inicio manual
 
 Backend:
@@ -115,6 +125,7 @@ app/ia/              Asistente de redacción y clasificación
 app/radar/           Radar de fuentes y hallazgos
 app/facebook/        Conexión autorizada con una página de Facebook
 app/publicaciones/   Aprobación, programación y publicación en Facebook
+app/municipios/      Cobertura e indicadores por municipio
 components/          Navegación e inicio de sesión
 lib/                 Cliente de la API
 types/               Tipos de noticias
@@ -126,4 +137,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v0.6 administra noticias, ofrece redacción asistida, detecta entradas RSS/Atom, transforma publicaciones autorizadas en borradores y permite aprobarlas, programarlas o publicarlas en la página conectada. El acceso a otras páginas públicas depende de los permisos y la revisión de la aplicación de Meta. Ningún contenido se envía sin confirmación humana.
+La v0.7 administra noticias, cobertura municipal, redacción asistida, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Permite aprobar, programar o publicar en la página conectada y prepara la estructura para un futuro mapa de incidencias. Ningún contenido se envía sin confirmación humana.
