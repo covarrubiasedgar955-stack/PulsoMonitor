@@ -11,6 +11,7 @@ const navigation = [
   { href: "/ia", label: "Asistente IA", icon: "✦", ready: true },
   { href: "/radar", label: "Radar", icon: "⌖", ready: true },
   { href: "/facebook", label: "Facebook", icon: "f", ready: true },
+  { href: "/publicaciones", label: "Publicaciones", icon: "◫", ready: true },
   { href: "#", label: "Municipios", icon: "⌂", ready: false },
   { href: "#", label: "Configuración", icon: "⚙", ready: false },
 ];
@@ -112,7 +113,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </nav>
         <div className="sidebar-footer">
           <span className="status-dot" /> API local
-          <small>Versión 0.5</small>
+          <small>Versión 0.6</small>
         </div>
       </aside>
       {menuOpen && <button className="backdrop" aria-label="Cerrar menú" onClick={() => setMenuOpen(false)} />}
