@@ -76,6 +76,7 @@ a { color: inherit; text-decoration: none; }
 .stat-icon.orange { color: #e77713; background: #fff0de; }
 .stat-icon.green { color: #159447; background: #e1f6e9; }
 .stat-icon.red { color: #dc2626; background: #fee7e7; }
+.stat-icon.purple { color: #7048c8; background: #eee8ff; }
 .stat-card > div:last-child { display: grid; }
 .stat-card span { color: var(--muted); font-size: 14px; }
 .stat-card strong { margin: 3px 0; font-size: 34px; line-height: 1; letter-spacing: -.03em; }
@@ -355,12 +356,14 @@ tr:hover td { background: #fbfcff; }
 .incident-card > strong { overflow: hidden; font-size: 12px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .incident-card p { margin: 0; overflow: hidden; color: #53627a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .incident-card small { color: #929bad; font-size: 8px; }
+.geo-review-badge { width: fit-content; display: inline-flex; align-items: center; min-height: 21px; padding: 0 8px; border-radius: 999px; color: #6640b5; background: #eee8ff; font-size: 8px; font-weight: 800; }
 .map-empty { min-height: 350px; display: grid; place-content: center; justify-items: center; gap: 7px; padding: 25px; color: var(--muted); text-align: center; }
 .map-empty > span { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 14px; color: var(--blue); background: var(--blue-soft); font-size: 22px; }
 .map-empty strong { color: var(--ink); font-size: 12px; }
 .map-empty p { max-width: 220px; margin: 0; font-size: 10px; line-height: 1.5; }
 .selected-incident { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 19px; border-top: 1px solid var(--line); background: white; }
 .selected-incident > div:first-child { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px 10px; }
+.selected-incident-tags { display: flex; flex-wrap: wrap; gap: 5px; }
 .selected-incident strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .selected-incident p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 9px; }
 .selected-incident > div:last-child { display: flex; gap: 7px; }
