@@ -8,6 +8,8 @@ import type {
   FacebookStatus,
   FacebookSyncResult,
   LoginResponse,
+  MapIncidentList,
+  MapStats,
   Municipality,
   MunicipalityInput,
   NewsInput,
@@ -131,6 +133,30 @@ export const api = {
 
   deleteMunicipality(id: number) {
     return request<void>(`/api/municipios/${id}`, { method: "DELETE" });
+  },
+
+  mapStats() {
+    return request<MapStats>("/api/mapa/estadisticas");
+  },
+
+  listMapIncidents(params: Record<string, string | number | undefined> = {}) {
+    const search = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") search.set(key, String(value));
+    });
+    const query = search.toString();
+    return request<MapIncidentList>(`/api/mapa/incidencias${query ? `?${query}` : ""}`);
+  },
+
+  setNewsLocation(id: number, location: string, latitude: number, longitude: number) {
+    return request<NewsItem>(`/api/noticias/${id}/ubicacion`, {
+      method: "PUT",
+      body: JSON.stringify({ location, latitude, longitude }),
+    });
+  },
+
+  clearNewsLocation(id: number) {
+    return request<NewsItem>(`/api/noticias/${id}/ubicacion`, { method: "DELETE" });
   },
 
   publishNewsToFacebook(id: number, scheduledAt: string | null = null) {
