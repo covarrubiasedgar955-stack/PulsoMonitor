@@ -5,7 +5,7 @@ import IncidentMap, { type MapPosition } from "@/components/IncidentMap";
 import { api } from "@/lib/api";
 import type { MapIncident, MapStats, Municipality, NewsItem, NewsPriority, NewsStatus } from "@/types/news";
 
-const emptyStats: MapStats = { news: 0, mapped: 0, unmapped: 0, urgent: 0 };
+const emptyStats: MapStats = { news: 0, mapped: 0, unmapped: 0, urgent: 0, review_pending: 0 };
 const statuses: NewsStatus[] = ["Pendiente", "En revisión", "Programada", "Publicada"];
 const priorities: NewsPriority[] = ["Baja", "Media", "Alta", "Urgente"];
 
@@ -127,6 +127,7 @@ export default function MapPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [locationNews, setLocationNews] = useState<NewsItem | null | undefined>(undefined);
   const [loading, setLoading] = useState(true);
+  const [autoLocating, setAutoLocating] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -184,18 +185,53 @@ export default function MapPage() {
     }
   }
 
+  async function autoLocate() {
+    setAutoLocating(true);
+    setError("");
+    setSuccess("");
+    try {
+      const result = await api.autoGeolocateNews(20);
+      const details = [
+        result.located ? `${result.located} ubicadas` : "",
+        result.not_found ? `${result.not_found} sin coincidencia` : "",
+        result.protected ? `${result.protected} protegidas por privacidad` : "",
+      ].filter(Boolean).join(" · ");
+      setSuccess(result.processed
+        ? `Geolocalización terminada: ${details}. Revisa los marcadores señalados como “Por confirmar”.`
+        : "No hay noticias nuevas pendientes de análisis. Las restantes necesitan ubicación manual.");
+      if (result.errors.length) setError(result.errors.join(" "));
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No se pudo realizar la geolocalización automática.");
+    } finally {
+      setAutoLocating(false);
+    }
+  }
+
+  async function confirmLocation(item: MapIncident) {
+    setError("");
+    setSuccess("");
+    try {
+      await api.confirmNewsLocation(item.id);
+      setSuccess("La ubicación automática quedó confirmada.");
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No se pudo confirmar la ubicación.");
+    }
+  }
+
   return (
     <main>
       <div className="page-heading">
-        <div><p className="eyebrow">FASE 8 · GEOLOCALIZACIÓN</p><h1>Mapa de incidencias</h1><p>Ubica reportes y noticias para visualizar lo que ocurre en cada zona.</p></div>
-        <button className="button primary" onClick={() => openLocation()}>+ Ubicar noticia</button>
+        <div><p className="eyebrow">FASE 9 · GEOLOCALIZACIÓN AUTOMÁTICA</p><h1>Mapa de incidencias</h1><p>Detecta lugares, revisa sugerencias y visualiza lo que ocurre en cada zona.</p></div>
+        <div className="heading-actions"><button className="button secondary" onClick={autoLocate} disabled={autoLocating || stats.unmapped === 0}>{autoLocating ? "Analizando lugares…" : "✦ Ubicar automáticamente"}</button><button className="button primary" onClick={() => openLocation()}>+ Ubicar manualmente</button></div>
       </div>
 
       <section className="stats-grid map-stats">
         <div className="stat-card"><div className="stat-icon blue">⌖</div><div><span>En el mapa</span><strong>{stats.mapped}</strong><small>Noticias ubicadas</small></div></div>
         <div className="stat-card"><div className="stat-icon orange">○</div><div><span>Por ubicar</span><strong>{stats.unmapped}</strong><small>Noticias sin coordenadas</small></div></div>
+        <div className="stat-card"><div className="stat-icon purple">✓</div><div><span>Por confirmar</span><strong>{stats.review_pending}</strong><small>Sugerencias automáticas</small></div></div>
         <div className="stat-card"><div className="stat-icon red">!</div><div><span>Urgentes</span><strong>{stats.urgent}</strong><small>Incidencias visibles</small></div></div>
-        <div className="stat-card"><div className="stat-icon green">▤</div><div><span>Cobertura</span><strong>{stats.news}</strong><small>Noticias no archivadas</small></div></div>
       </section>
 
       {error && <div className="alert error">{error}</div>}
@@ -222,6 +258,7 @@ export default function MapPage() {
                   <div><span className={`priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span><span className={statusClass(item.status)}>{item.status}</span></div>
                   <strong>{item.title}</strong>
                   <p>{item.location || item.municipality}</p>
+                  {!item.location_reviewed && <span className="geo-review-badge">Por confirmar · {item.location_confidence}%</span>}
                   <small>{item.category} · {dateTime(item.created_at)}</small>
                 </button>
               ))}
@@ -229,10 +266,10 @@ export default function MapPage() {
             </div>
           </aside>
         </div>
-        {selected && <div className="selected-incident"><div><span className={`priority priority-${selected.priority.toLowerCase()}`}>{selected.priority}</span><strong>{selected.title}</strong><p>{selected.location || selected.municipality} · {selected.category}</p></div><div><button className="button secondary" onClick={() => openLocation(selected)}>Editar ubicación</button><button className="button danger-outline" onClick={() => clearLocation(selected)}>Quitar del mapa</button></div></div>}
+        {selected && <div className="selected-incident"><div><div className="selected-incident-tags"><span className={`priority priority-${selected.priority.toLowerCase()}`}>{selected.priority}</span>{!selected.location_reviewed && <span className="geo-review-badge">Sugerencia automática · {selected.location_confidence}%</span>}</div><strong>{selected.title}</strong><p>{selected.location || selected.municipality} · {selected.category}</p></div><div>{!selected.location_reviewed && <button className="button primary" onClick={() => confirmLocation(selected)}>Confirmar ubicación</button>}<button className="button secondary" onClick={() => openLocation(selected)}>Editar ubicación</button><button className="button danger-outline" onClick={() => clearLocation(selected)}>Quitar del mapa</button></div></div>}
       </section>
 
-      <div className="map-privacy-note"><span>i</span><p><strong>Privacidad editorial:</strong> utiliza ubicaciones aproximadas cuando el reporte involucre domicilios particulares, menores de edad o víctimas.</p></div>
+      <div className="map-privacy-note"><span>i</span><p><strong>Automatización segura:</strong> solo se consulta una referencia corta del lugar y cada sugerencia requiere confirmación. Los posibles domicilios particulares, víctimas o menores se excluyen de la ubicación automática.</p></div>
 
       {locationNews !== undefined && <LocationModal news={news} initial={locationNews} onClose={() => setLocationNews(undefined)} onSaved={saved} />}
     </main>
