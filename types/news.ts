@@ -27,6 +27,9 @@ export interface NewsItem {
   tags: string[];
   facebook_post_id: string;
   scheduled_at: string | null;
+  location: string;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 export type NewsInput = Omit<
@@ -63,6 +66,32 @@ export interface Municipality extends MunicipalityInput {
   published: number;
   urgent: number;
   radar_sources: number;
+}
+
+export interface MapIncident {
+  id: number;
+  title: string;
+  summary: string;
+  municipality: string;
+  category: string;
+  priority: NewsPriority;
+  status: NewsStatus;
+  location: string;
+  latitude: number;
+  longitude: number;
+  created_at: string;
+}
+
+export interface MapIncidentList {
+  items: MapIncident[];
+  total: number;
+}
+
+export interface MapStats {
+  news: number;
+  mapped: number;
+  unmapped: number;
+  urgent: number;
 }
 
 export interface LoginResponse {

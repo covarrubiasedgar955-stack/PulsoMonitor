@@ -82,6 +82,9 @@ export default function AIPage() {
       published_at: null,
       is_ai: true,
       tags: tagText.split(",").map((tag) => tag.trim()).filter(Boolean),
+      location: "",
+      latitude: null,
+      longitude: null,
     };
     try {
       await api.createNews(payload);

@@ -21,6 +21,9 @@ const initialDraft: Draft = {
   published_at: null,
   is_ai: false,
   tags: "",
+  location: "",
+  latitude: null,
+  longitude: null,
 };
 
 const statuses: NewsStatus[] = ["Pendiente", "En revisión", "Programada", "Publicada", "Archivada"];
@@ -51,6 +54,9 @@ function NewsModal({ item, municipalities, onClose, onSaved }: { item: NewsItem 
     published_at: item.published_at,
     is_ai: item.is_ai,
     tags: item.tags.join(", "),
+    location: item.location,
+    latitude: item.latitude,
+    longitude: item.longitude,
   } : initialDraft);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");

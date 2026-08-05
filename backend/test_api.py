@@ -41,7 +41,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "0.7.0")
+        self.assertEqual(health.json()["version"], "0.8.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -79,6 +79,9 @@ class PulsoMonitorApiTests(unittest.TestCase):
                 tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
             self.assertIn("facebook_post_id", columns)
             self.assertIn("scheduled_at", columns)
+            self.assertIn("location", columns)
+            self.assertIn("latitude", columns)
+            self.assertIn("longitude", columns)
             self.assertIn("municipalities", tables)
 
     def test_facebook_connection_sync_and_import(self):
@@ -276,6 +279,56 @@ class PulsoMonitorApiTests(unittest.TestCase):
 
         protected = self.client.delete(f"/api/municipios/{municipality_id}", headers=self.headers)
         self.assertEqual(protected.status_code, 409)
+
+    def test_map_location_filters_and_clear(self):
+        payload = {
+            "title": "Reporte para ubicar en el mapa",
+            "summary": "Incidencia de prueba en el centro de Tequila.",
+            "content": "El reporte fue revisado y está listo para geolocalizarse.",
+            "source": "Reporte ciudadano",
+            "author": "Pulso Tequila",
+            "municipality": "Tequila",
+            "category": "Seguridad",
+            "priority": "Urgente",
+            "status": "En revisión",
+            "image_url": "",
+            "url": "",
+            "published_at": None,
+            "is_ai": False,
+            "tags": ["mapa", "tequila"],
+            "location": "Centro histórico",
+            "latitude": None,
+            "longitude": None,
+        }
+        created = self.client.post("/api/noticias", headers=self.headers, json=payload)
+        self.assertEqual(created.status_code, 201)
+        news_id = created.json()["id"]
+
+        located = self.client.put(
+            f"/api/noticias/{news_id}/ubicacion",
+            headers=self.headers,
+            json={"location": "Centro histórico", "latitude": 20.8817, "longitude": -103.8356},
+        )
+        self.assertEqual(located.status_code, 200)
+        self.assertAlmostEqual(located.json()["latitude"], 20.8817)
+
+        incidents = self.client.get(
+            "/api/mapa/incidencias?priority=Urgente&municipality=Tequila",
+            headers=self.headers,
+        )
+        self.assertEqual(incidents.status_code, 200)
+        self.assertTrue(any(item["id"] == news_id for item in incidents.json()["items"]))
+
+        stats = self.client.get("/api/mapa/estadisticas", headers=self.headers)
+        self.assertEqual(stats.status_code, 200)
+        self.assertGreaterEqual(stats.json()["mapped"], 1)
+        self.assertGreaterEqual(stats.json()["urgent"], 1)
+
+        cleared = self.client.delete(f"/api/noticias/{news_id}/ubicacion", headers=self.headers)
+        self.assertEqual(cleared.status_code, 200)
+        self.assertIsNone(cleared.json()["latitude"])
+        remaining = self.client.get("/api/mapa/incidencias", headers=self.headers)
+        self.assertFalse(any(item["id"] == news_id for item in remaining.json()["items"]))
 
     def test_radar_scan_avoids_duplicates_and_imports_news(self):
         source = self.client.post(
