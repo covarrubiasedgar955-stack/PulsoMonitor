@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { FacebookPost, FacebookStatus } from "@/types/news";
+import type { AIStatus, FacebookPost, FacebookStatus } from "@/types/news";
 
 function dateTime(value: string | null) {
   if (!value) return "Sin sincronizar";
@@ -12,6 +12,7 @@ function dateTime(value: string | null) {
 
 export default function FacebookPage() {
   const [status, setStatus] = useState<FacebookStatus | null>(null);
+  const [aiStatus, setAIStatus] = useState<AIStatus | null>(null);
   const [posts, setPosts] = useState<FacebookPost[]>([]);
   const [pendingOnly, setPendingOnly] = useState(true);
   const [pageId, setPageId] = useState("");
@@ -27,11 +28,12 @@ export default function FacebookPage() {
     setLoading(true);
     setError("");
     try {
-      const [connection, postData] = await Promise.all([
-        api.facebookStatus(), api.listFacebookPosts(pendingOnly),
+      const [connection, postData, editorialAI] = await Promise.all([
+        api.facebookStatus(), api.listFacebookPosts(pendingOnly), api.aiStatus(),
       ]);
       setStatus(connection);
       setPosts(postData.items);
+      setAIStatus(editorialAI);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No se pudo cargar Facebook.");
     } finally {
@@ -77,16 +79,17 @@ export default function FacebookPage() {
     }
   }
 
-  async function importPost(post: FacebookPost) {
+  async function preparePost(post: FacebookPost) {
     setImporting(post.id);
     setError("");
     setMessage("");
     try {
-      await api.importFacebookPost(post.id);
-      setMessage("La publicación se guardó como noticia pendiente.");
+      const result = await api.prepareFacebookPost(post.id);
+      const assistant = result.provider === "openai" ? "OpenAI" : "el analizador local";
+      setMessage(`Borrador preparado con ${assistant}: “${result.news.title}”.`);
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "No se pudo importar la publicación.");
+      setError(caught instanceof Error ? caught.message : "No se pudo preparar la publicación.");
     } finally {
       setImporting(null);
     }
@@ -106,12 +109,12 @@ export default function FacebookPage() {
   return (
     <main>
       <div className="page-heading facebook-heading">
-        <div><p className="eyebrow">FASE 4 · INTEGRACIÓN AUTORIZADA</p><h1>Facebook</h1><p>Sincroniza publicaciones de una página que administras y conviértelas en noticias.</p></div>
+        <div><p className="eyebrow">FASE 5 · FLUJO INTELIGENTE</p><h1>Facebook</h1><p>Sincroniza publicaciones y conviértelas en borradores editoriales listos para revisar.</p></div>
         {status?.connected && <div className="heading-actions"><button className="button secondary" onClick={disconnect}>Desconectar</button><button className="button facebook-button" onClick={sync} disabled={syncing}>{syncing ? "Sincronizando…" : "Sincronizar ahora"}</button></div>}
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {message && <div className="alert success">{message} {message.includes("noticia") && <Link href="/noticias">Ir a Noticias →</Link>}</div>}
+      {message && <div className="alert success">{message} {message.includes("Borrador") && <Link href="/noticias">Revisar en Noticias →</Link>}</div>}
 
       {!loading && !status?.connected ? (
         <div className="facebook-connect-grid">
@@ -145,13 +148,13 @@ export default function FacebookPage() {
           {status?.last_error && <div className="alert error">Último error de Meta: {status.last_error}</div>}
 
           <section className="panel facebook-posts">
-            <div className="panel-header findings-header"><div><h2>Publicaciones detectadas</h2><p>Revisa el contenido antes de enviarlo a Noticias.</p></div><div className="radar-tabs"><button className={pendingOnly ? "active" : ""} onClick={() => setPendingOnly(true)}>Por revisar</button><button className={!pendingOnly ? "active" : ""} onClick={() => setPendingOnly(false)}>Todas</button></div></div>
+            <div className="panel-header findings-header"><div><h2>Publicaciones detectadas</h2><p>El asistente sugiere título, resumen, categoría, prioridad y etiquetas.</p></div><div className="facebook-review-tools"><span className={`ai-mode ${aiStatus?.connected ? "connected" : ""}`}>✦ {aiStatus?.connected ? "OpenAI conectado" : "Analizador local"}</span><div className="radar-tabs"><button className={pendingOnly ? "active" : ""} onClick={() => setPendingOnly(true)}>Por revisar</button><button className={!pendingOnly ? "active" : ""} onClick={() => setPendingOnly(false)}>Todas</button></div></div></div>
             <div className="facebook-post-list">
               {posts.map((post) => (
                 <article className="facebook-post-card" key={post.id}>
                   {post.picture_url ? <div className="facebook-post-image" role="img" aria-label="Imagen de la publicación" style={{ backgroundImage: `url(${JSON.stringify(post.picture_url)})` }} /> : <div className="facebook-post-placeholder">f</div>}
                   <div className="facebook-post-copy"><div className="finding-badges"><span className="tag">Facebook</span><span>{dateTime(post.created_time || post.detected_at)}</span></div><p>{post.message}</p>{post.permalink_url && <a href={post.permalink_url} target="_blank" rel="noreferrer">Abrir publicación original ↗</a>}</div>
-                  <div className="finding-actions">{post.imported_news_id ? <span className="imported-badge">✓ Importada</span> : <button className="button primary" onClick={() => importPost(post)} disabled={importing === post.id}>{importing === post.id ? "Importando…" : "Importar a Noticias"}</button>}</div>
+                  <div className="finding-actions">{post.imported_news_id ? <span className="imported-badge">✓ Preparada</span> : <button className="button primary" onClick={() => preparePost(post)} disabled={importing === post.id}>{importing === post.id ? "Analizando…" : "✦ Preparar con IA"}</button>}</div>
                 </article>
               ))}
               {loading && <div className="radar-empty"><span>Cargando publicaciones…</span></div>}
