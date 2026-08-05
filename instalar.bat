@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 echo.
 echo ========================================
-echo   INSTALANDO PULSO MONITOR v0.6
+echo   INSTALANDO PULSO MONITOR v0.7
 echo ========================================
 echo.
 
