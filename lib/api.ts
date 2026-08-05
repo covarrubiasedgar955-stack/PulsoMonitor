@@ -8,6 +8,8 @@ import type {
   FacebookStatus,
   FacebookSyncResult,
   LoginResponse,
+  Municipality,
+  MunicipalityInput,
   NewsInput,
   NewsItem,
   NewsListResponse,
@@ -107,6 +109,28 @@ export const api = {
 
   deleteNews(id: number) {
     return request<void>(`/api/noticias/${id}`, { method: "DELETE" });
+  },
+
+  listMunicipalities() {
+    return request<Municipality[]>("/api/municipios");
+  },
+
+  createMunicipality(payload: MunicipalityInput) {
+    return request<Municipality>("/api/municipios", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  updateMunicipality(id: number, payload: MunicipalityInput) {
+    return request<Municipality>(`/api/municipios/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  deleteMunicipality(id: number) {
+    return request<void>(`/api/municipios/${id}`, { method: "DELETE" });
   },
 
   publishNewsToFacebook(id: number, scheduledAt: string | null = null) {
