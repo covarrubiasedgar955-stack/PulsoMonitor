@@ -1,4 +1,4 @@
-# Pulso Monitor v0.7
+# Pulso Monitor v0.8
 
 Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye dashboard, gestión editorial, Asistente IA, Radar de fuentes y conexión autorizada con Facebook.
 
@@ -32,6 +32,11 @@ Centro local de administración, redacción y detección de noticias para **Puls
 - Conteos de noticias, pendientes, publicadas, urgentes y fuentes por municipio.
 - Filtro exacto de Noticias por municipio.
 - Incorporación automática de las zonas ya utilizadas en Noticias o Radar.
+- Mapa interactivo de incidencias con cartografía de OpenStreetMap.
+- Ubicación de noticias mediante un clic o coordenadas manuales.
+- Marcadores diferenciados por prioridad y estado editorial.
+- Filtros geográficos por municipio, estado y prioridad.
+- Edición o retiro de una ubicación sin eliminar la noticia.
 
 ## Instalación rápida en Windows
 
@@ -91,6 +96,12 @@ El módulo **Municipios** concentra la cobertura editorial de Pulso Tequila. Per
 
 Los nombres usados previamente en Noticias y Radar se incorporan automáticamente, por lo que la actualización no pierde ni modifica el contenido existente.
 
+## Mapa de incidencias
+
+El módulo **Mapa** permite seleccionar una noticia y colocarla visualmente en el punto correspondiente. Las noticias existentes se conservan sin ubicación hasta que el administrador decida marcarlas. También es posible escribir una referencia y las coordenadas manualmente.
+
+El mapa utiliza Leaflet y las teselas estándar de OpenStreetMap con atribución visible. Requiere conexión a internet y está destinado a visualización interactiva normal; no realiza descargas masivas ni ofrece mapas sin conexión. Por privacidad, se recomienda usar ubicaciones aproximadas cuando una noticia involucre domicilios particulares, víctimas o menores de edad.
+
 ## Inicio manual
 
 Backend:
@@ -126,6 +137,7 @@ app/radar/           Radar de fuentes y hallazgos
 app/facebook/        Conexión autorizada con una página de Facebook
 app/publicaciones/   Aprobación, programación y publicación en Facebook
 app/municipios/      Cobertura e indicadores por municipio
+app/mapa/            Mapa interactivo de incidencias
 components/          Navegación e inicio de sesión
 lib/                 Cliente de la API
 types/               Tipos de noticias
@@ -137,4 +149,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v0.7 administra noticias, cobertura municipal, redacción asistida, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Permite aprobar, programar o publicar en la página conectada y prepara la estructura para un futuro mapa de incidencias. Ningún contenido se envía sin confirmación humana.
+La v0.8 administra noticias, cobertura municipal, geolocalización editorial, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Permite ubicar reportes en un mapa, aprobarlos, programarlos o publicarlos en la página conectada. Ningún contenido se envía sin confirmación humana.
