@@ -47,6 +47,24 @@ export interface NewsListResponse {
   total: number;
 }
 
+export interface MunicipalityInput {
+  name: string;
+  region: string;
+  state: string;
+  active: boolean;
+}
+
+export interface Municipality extends MunicipalityInput {
+  id: number;
+  created_at: string;
+  updated_at: string;
+  news: number;
+  pending: number;
+  published: number;
+  urgent: number;
+  radar_sources: number;
+}
+
 export interface LoginResponse {
   access_token: string;
   token_type: "bearer";
