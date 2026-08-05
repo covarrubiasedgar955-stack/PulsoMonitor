@@ -159,3 +159,11 @@ export interface FacebookSyncResult {
   detected: number;
   total_received: number;
 }
+
+export interface FacebookPrepareResult {
+  news: NewsItem;
+  provider: "openai" | "local";
+  model: string | null;
+  confidence: number;
+  warnings: string[];
+}
