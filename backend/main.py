@@ -395,6 +395,14 @@ class FacebookSyncResult(BaseModel):
     total_received: int
 
 
+class FacebookPrepareResult(BaseModel):
+    news: NewsItem
+    provider: Literal["openai", "local"]
+    model: str | None = None
+    confidence: int = Field(ge=0, le=100)
+    warnings: list[str] = Field(default_factory=list)
+
+
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
@@ -636,7 +644,7 @@ def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = No
     query = {**(params or {}), "access_token": token}
     url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
     try:
-        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.4"})
+        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.5"})
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
         raise ValueError("No fue posible comunicarse con Meta.") from error
@@ -682,8 +690,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="0.4.0",
-    description="API local para administrar, analizar y detectar noticias, con conexión autorizada a Facebook.",
+    version="0.5.0",
+    description="API local para administrar, analizar y preparar noticias desde fuentes autorizadas.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -701,7 +709,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.4.0"}
+    return {"status": "ok", "version": "0.5.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -1068,6 +1076,65 @@ def import_facebook_post(post_id: int, _: Annotated[str, Depends(current_user)])
         db.execute("UPDATE facebook_posts SET imported_news_id = ? WHERE id = ?", (news_id, post_id))
         row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
     return row_to_news(row)
+
+
+@app.post(
+    "/api/facebook/publicaciones/{post_id}/preparar",
+    response_model=FacebookPrepareResult,
+    status_code=status.HTTP_201_CREATED,
+)
+def prepare_facebook_post(post_id: int, _: Annotated[str, Depends(current_user)]) -> FacebookPrepareResult:
+    with connection() as db:
+        post_row = db.execute("SELECT * FROM facebook_posts WHERE id = ?", (post_id,)).fetchone()
+        if post_row is None:
+            raise HTTPException(status_code=404, detail="La publicación no existe.")
+        if post_row["imported_news_id"] is not None:
+            raise HTTPException(status_code=409, detail="Esta publicación ya fue preparada en Noticias.")
+        post = dict(post_row)
+
+    page_name = os.getenv("FACEBOOK_PAGE_NAME", "Página autorizada")
+    source = f"Facebook · {page_name}"
+    analysis_payload = AIAnalyzeRequest.model_construct(
+        source_text=post["message"],
+        municipality="Tequila",
+        source=source,
+        tone="Informativo",
+    )
+    analysis = openai_ai_analysis(analysis_payload)
+    tags = list(dict.fromkeys(["facebook", "tequila", *analysis.tags]))[:8]
+    now = utc_now()
+
+    with connection() as db:
+        current = db.execute("SELECT imported_news_id FROM facebook_posts WHERE id = ?", (post_id,)).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="La publicación no existe.")
+        if current["imported_news_id"] is not None:
+            raise HTTPException(status_code=409, detail="Esta publicación ya fue preparada en Noticias.")
+        cursor = db.execute(
+            """
+            INSERT INTO noticias (
+                title, summary, content, source, author, municipality, category,
+                priority, status, image_url, url, published_at, updated_at, is_ai, tags, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                analysis.title, analysis.summary, analysis.content, source,
+                "Redacción Pulso Tequila", "Tequila", analysis.category,
+                analysis.priority, "Pendiente", post["picture_url"], post["permalink_url"],
+                post["created_time"], now, 1, json.dumps(tags, ensure_ascii=False), now,
+            ),
+        )
+        news_id = int(cursor.lastrowid)
+        db.execute("UPDATE facebook_posts SET imported_news_id = ? WHERE id = ?", (news_id, post_id))
+        news_row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+
+    return FacebookPrepareResult(
+        news=row_to_news(news_row),
+        provider=analysis.provider,
+        model=analysis.model,
+        confidence=analysis.confidence,
+        warnings=analysis.warnings,
+    )
 
 
 @app.get("/api/noticias/estadisticas", response_model=NewsStats)
