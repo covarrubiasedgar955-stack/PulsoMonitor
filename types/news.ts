@@ -25,9 +25,14 @@ export interface NewsItem {
   updated_at: string;
   is_ai: boolean;
   tags: string[];
+  facebook_post_id: string;
+  scheduled_at: string | null;
 }
 
-export type NewsInput = Omit<NewsItem, "id" | "created_at" | "updated_at">;
+export type NewsInput = Omit<
+  NewsItem,
+  "id" | "created_at" | "updated_at" | "facebook_post_id" | "scheduled_at"
+>;
 
 export interface NewsStats {
   today: number;
@@ -166,4 +171,10 @@ export interface FacebookPrepareResult {
   model: string | null;
   confidence: number;
   warnings: string[];
+}
+
+export interface FacebookPublishResult {
+  news: NewsItem;
+  facebook_post_id: string;
+  scheduled: boolean;
 }
