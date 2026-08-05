@@ -79,10 +79,13 @@ class PulsoMonitorApiTests(unittest.TestCase):
         posts = self.client.get("/api/facebook/publicaciones?pending_only=true", headers=self.headers)
         self.assertEqual(posts.json()["total"], 2)
         post_id = posts.json()["items"][0]["id"]
-        imported = self.client.post(f"/api/facebook/publicaciones/{post_id}/importar", headers=self.headers)
+        imported = self.client.post(f"/api/facebook/publicaciones/{post_id}/preparar", headers=self.headers)
         self.assertEqual(imported.status_code, 201)
-        self.assertEqual(imported.json()["status"], "Pendiente")
-        duplicate = self.client.post(f"/api/facebook/publicaciones/{post_id}/importar", headers=self.headers)
+        self.assertEqual(imported.json()["news"]["status"], "Pendiente")
+        self.assertTrue(imported.json()["news"]["is_ai"])
+        self.assertEqual(imported.json()["provider"], "local")
+        self.assertIn(imported.json()["news"]["category"], ["Eventos", "Servicios"])
+        duplicate = self.client.post(f"/api/facebook/publicaciones/{post_id}/preparar", headers=self.headers)
         self.assertEqual(duplicate.status_code, 409)
 
     def test_news_crud(self):
