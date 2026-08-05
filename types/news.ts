@@ -30,11 +30,15 @@ export interface NewsItem {
   location: string;
   latitude: number | null;
   longitude: number | null;
+  location_source: "" | "manual" | "automatic" | "not_found" | "protected";
+  location_confidence: number;
+  location_reviewed: boolean;
 }
 
 export type NewsInput = Omit<
   NewsItem,
-  "id" | "created_at" | "updated_at" | "facebook_post_id" | "scheduled_at"
+  "id" | "created_at" | "updated_at" | "facebook_post_id" | "scheduled_at" |
+  "location_source" | "location_confidence" | "location_reviewed"
 >;
 
 export interface NewsStats {
@@ -79,6 +83,9 @@ export interface MapIncident {
   location: string;
   latitude: number;
   longitude: number;
+  location_source: string;
+  location_confidence: number;
+  location_reviewed: boolean;
   created_at: string;
 }
 
@@ -92,6 +99,16 @@ export interface MapStats {
   mapped: number;
   unmapped: number;
   urgent: number;
+  review_pending: number;
+}
+
+export interface GeolocationBatchResult {
+  processed: number;
+  located: number;
+  review_pending: number;
+  not_found: number;
+  protected: number;
+  errors: string[];
 }
 
 export interface LoginResponse {
