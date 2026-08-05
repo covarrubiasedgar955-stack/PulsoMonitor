@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 echo.
 echo ========================================
-echo   INSTALANDO PULSO MONITOR v0.3
+echo   INSTALANDO PULSO MONITOR v0.4
 echo ========================================
 echo.
 
@@ -26,10 +26,16 @@ call backend\.venv\Scripts\python.exe -m pip install --upgrade pip
 call backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 if errorlevel 1 (echo ERROR al instalar la API. & pause & exit /b 1)
 
+echo [SEGURIDAD] Generando acceso privado...
+call backend\.venv\Scripts\python.exe backend\generate_config.py
+if errorlevel 1 (echo ERROR al generar los datos de acceso. & pause & exit /b 1)
+
 echo.
 echo ========================================
 echo   INSTALACION TERMINADA
 echo ========================================
+echo Tus datos de acceso se guardaron en ACCESO.txt
 echo Ahora abre iniciar.bat
 echo.
+start "" notepad.exe "%~dp0ACCESO.txt"
 pause

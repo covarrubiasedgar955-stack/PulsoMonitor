@@ -1,12 +1,22 @@
 import os
+import secrets
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 temporary_directory = tempfile.TemporaryDirectory()
+test_admin_user = "test-admin"
+test_admin_password = secrets.token_urlsafe(18)
+os.environ["PULSO_ADMIN_USER"] = test_admin_user
+os.environ["PULSO_ADMIN_PASSWORD"] = test_admin_password
+os.environ["PULSO_SECRET_KEY"] = secrets.token_urlsafe(48)
 os.environ["PULSO_DATABASE_PATH"] = str(Path(temporary_directory.name) / "test.db")
+os.environ["PULSO_ENV_PATH"] = str(Path(temporary_directory.name) / ".env")
 os.environ.pop("OPENAI_API_KEY", None)
+os.environ.pop("FACEBOOK_PAGE_ACCESS_TOKEN", None)
+os.environ.pop("FACEBOOK_PAGE_ID", None)
+os.environ.pop("FACEBOOK_PAGE_NAME", None)
 
 from fastapi.testclient import TestClient  # noqa: E402
 import main  # noqa: E402
@@ -18,7 +28,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.client_context = TestClient(app)
         cls.client = cls.client_context.__enter__()
-        login = cls.client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+        login = cls.client.post("/api/auth/login", json={"username": test_admin_user, "password": test_admin_password})
         cls.headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
     @classmethod
@@ -30,6 +40,50 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/health").status_code, 200)
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
+
+    def test_facebook_connection_sync_and_import(self):
+        def graph_response(path, _token, _params=None):
+            if path == "123456":
+                return {"id": "123456", "name": "Pulso Tequila"}
+            return {
+                "data": [
+                    {
+                        "id": "123456_1",
+                        "message": "Inicia una jornada cultural en el centro de Tequila. Habrá actividades para las familias.",
+                        "permalink_url": "https://www.facebook.com/123456/posts/1",
+                        "created_time": "2026-08-04T18:00:00+0000",
+                        "full_picture": "https://example.com/imagen.jpg",
+                    },
+                    {
+                        "id": "123456_2",
+                        "message": "Autoridades informan de un cierre vial temporal durante el fin de semana.",
+                        "permalink_url": "https://www.facebook.com/123456/posts/2",
+                        "created_time": "2026-08-04T19:00:00+0000",
+                    },
+                ]
+            }
+
+        with patch.object(main, "facebook_graph_get", side_effect=graph_response):
+            connected = self.client.post(
+                "/api/facebook/conectar",
+                headers=self.headers,
+                json={"page_id": "123456", "page_access_token": "EAAB" + "x" * 40},
+            )
+            self.assertEqual(connected.status_code, 200)
+            self.assertTrue(connected.json()["connected"])
+            first_sync = self.client.post("/api/facebook/sincronizar", headers=self.headers)
+            second_sync = self.client.post("/api/facebook/sincronizar", headers=self.headers)
+
+        self.assertEqual(first_sync.json()["detected"], 2)
+        self.assertEqual(second_sync.json()["detected"], 0)
+        posts = self.client.get("/api/facebook/publicaciones?pending_only=true", headers=self.headers)
+        self.assertEqual(posts.json()["total"], 2)
+        post_id = posts.json()["items"][0]["id"]
+        imported = self.client.post(f"/api/facebook/publicaciones/{post_id}/importar", headers=self.headers)
+        self.assertEqual(imported.status_code, 201)
+        self.assertEqual(imported.json()["status"], "Pendiente")
+        duplicate = self.client.post(f"/api/facebook/publicaciones/{post_id}/importar", headers=self.headers)
+        self.assertEqual(duplicate.status_code, 409)
 
     def test_news_crud(self):
         payload = {

@@ -212,6 +212,36 @@ tr:hover td { background: #fbfcff; }
 .source-help { display: grid; gap: 3px; margin-top: 18px; padding: 12px 14px; border-radius: 9px; color: #3e5a8a; background: #eef4ff; font-size: 11px; }
 .source-help span { color: #5f6f89; line-height: 1.45; }
 
+.button.facebook-button { color: white; background: #1877f2; box-shadow: 0 8px 20px rgba(24,119,242,.22); }
+.button.facebook-button:hover { background: #0e66d4; transform: translateY(-1px); }
+.facebook-connect-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 20px; }
+.facebook-intro { padding: 34px; }
+.facebook-logo { width: 58px; height: 58px; display: grid; place-items: center; margin-bottom: 24px; border-radius: 17px; color: white; background: #1877f2; font: 900 34px/1 Arial, sans-serif; box-shadow: 0 10px 28px rgba(24,119,242,.28); }
+.facebook-intro h2 { margin: 7px 0 10px; font-size: 27px; letter-spacing: -.03em; }
+.facebook-intro > p:not(.eyebrow) { max-width: 560px; margin: 0 0 19px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.facebook-intro ul { display: grid; gap: 10px; margin: 0 0 25px; padding: 18px 20px 18px 38px; border-radius: 12px; color: #46536a; background: #f5f8fc; font-size: 12px; }
+.facebook-connect-form .panel-header { border-bottom: 1px solid var(--line); }
+.facebook-connect-form form { display: grid; gap: 18px; padding: 25px 27px 28px; }
+.facebook-connect-form label { display: grid; gap: 7px; color: #43516a; font-size: 12px; font-weight: 750; }
+.facebook-connect-form input, .facebook-connect-form textarea { width: 100%; border: 1px solid #dce2eb; border-radius: 9px; padding: 11px 12px; background: #fbfcfe; color: var(--ink); outline: none; resize: vertical; }
+.facebook-connect-form input:focus, .facebook-connect-form textarea:focus { border-color: #6e94f3; box-shadow: 0 0 0 3px rgba(36,99,235,.1); }
+.token-notice { display: grid; gap: 2px; padding: 11px 13px; border: 1px solid #f0d5a5; border-radius: 9px; color: #80520b; background: #fff7e9; font-size: 11px; }
+.token-notice span { color: #8c6a34; }
+.facebook-stats .stat-card { min-height: 132px; }
+.stat-icon.facebook { color: white; background: #1877f2; font: 900 27px/1 Arial, sans-serif; }
+.page-name-stat { max-width: 180px; overflow: hidden; font-size: 18px !important; text-overflow: ellipsis; white-space: nowrap; }
+.sync-date-stat { max-width: 190px; font-size: 14px !important; line-height: 1.25 !important; }
+.facebook-posts .panel-header { border-bottom: 1px solid var(--line); }
+.facebook-post-list { display: grid; }
+.facebook-post-card { display: grid; grid-template-columns: 100px minmax(0, 1fr) 150px; align-items: center; gap: 20px; padding: 20px 23px; border-bottom: 1px solid #edf0f5; }
+.facebook-post-card:last-child { border-bottom: 0; }
+.facebook-post-image, .facebook-post-placeholder { width: 100px; height: 82px; border-radius: 10px; }
+.facebook-post-image { background-color: #eef2f7; background-position: center; background-size: cover; }
+.facebook-post-placeholder { display: grid; place-items: center; color: white; background: linear-gradient(145deg, #3086f5, #155ac0); font: 900 29px/1 Arial, sans-serif; }
+.facebook-post-copy { min-width: 0; }
+.facebook-post-copy > p { display: -webkit-box; margin: 8px 0 6px; overflow: hidden; color: #344157; font-size: 12px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.facebook-post-copy > a { color: #1877f2; font-size: 10px; font-weight: 750; }
+
 .modal-layer { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; }
 .modal-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: rgba(5,14,29,.64); backdrop-filter: blur(3px); }
 .modal { position: relative; width: min(760px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; border-radius: 18px; background: white; box-shadow: 0 24px 80px rgba(0,0,0,.3); }
@@ -250,6 +280,7 @@ tr:hover td { background: #fbfcff; }
   .ai-config { grid-template-columns: 1fr; }
   .radar-grid { grid-template-columns: 1fr; }
   .radar-sources, .radar-findings { min-height: auto; }
+  .facebook-connect-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 760px) {
@@ -287,4 +318,8 @@ tr:hover td { background: #fbfcff; }
   .radar-tabs { width: 100%; }
   .radar-tabs button { flex: 1; }
   .finding-actions { grid-template-columns: 1fr 1fr; }
+  .facebook-post-card { grid-template-columns: 70px minmax(0, 1fr); align-items: start; gap: 14px; padding: 17px; }
+  .facebook-post-image, .facebook-post-placeholder { width: 70px; height: 70px; }
+  .facebook-post-card .finding-actions { grid-column: 1 / -1; }
+  .facebook-intro, .facebook-connect-form form { padding: 22px 19px; }
 }

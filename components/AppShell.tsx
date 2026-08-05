@@ -10,13 +10,14 @@ const navigation = [
   { href: "/noticias", label: "Noticias", icon: "▤", ready: true },
   { href: "/ia", label: "Asistente IA", icon: "✦", ready: true },
   { href: "/radar", label: "Radar", icon: "⌖", ready: true },
+  { href: "/facebook", label: "Facebook", icon: "f", ready: true },
   { href: "#", label: "Municipios", icon: "⌂", ready: false },
   { href: "#", label: "Configuración", icon: "⚙", ready: false },
 ];
 
 function Login({ onSuccess }: { onSuccess: () => void }) {
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("admin123");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -46,18 +47,18 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
         <form onSubmit={submit} className="login-form">
           <label>
             Usuario
-            <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+            <input required value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
           </label>
           <label>
             Contraseña
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" />
+            <input required type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" />
           </label>
           {error && <div className="alert error">{error}</div>}
           <button className="button primary wide" disabled={loading}>
             {loading ? "Ingresando…" : "Entrar al sistema"}
           </button>
         </form>
-        <p className="login-hint">Acceso inicial: admin / admin123</p>
+        <p className="login-hint">Tus datos de acceso están en el archivo ACCESO.txt.</p>
       </section>
     </main>
   );
@@ -111,7 +112,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </nav>
         <div className="sidebar-footer">
           <span className="status-dot" /> API local
-          <small>Versión 0.3</small>
+          <small>Versión 0.4</small>
         </div>
       </aside>
       {menuOpen && <button className="backdrop" aria-label="Cerrar menú" onClick={() => setMenuOpen(false)} />}
