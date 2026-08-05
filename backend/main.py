@@ -11,7 +11,9 @@ import re
 import secrets
 import socket
 import sqlite3
+import threading
 import time
+import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from html import unescape
@@ -37,6 +39,13 @@ SECRET_KEY = os.getenv("PULSO_SECRET_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 META_GRAPH_VERSION = os.getenv("META_GRAPH_VERSION", "v26.0")
 TOKEN_TTL_SECONDS = 12 * 60 * 60
+GEOCODER_URL = os.getenv("PULSO_GEOCODER_URL", "https://nominatim.openstreetmap.org/search").strip()
+GEOCODER_USER_AGENT = os.getenv(
+    "PULSO_GEOCODER_USER_AGENT",
+    "PulsoMonitor/0.9 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
+).strip()
+GEOCODER_LOCK = threading.Lock()
+GEOCODER_LAST_REQUEST = 0.0
 
 NewsStatus = Literal["Pendiente", "En revisión", "Programada", "Publicada", "Archivada"]
 NewsPriority = Literal["Baja", "Media", "Alta", "Urgente"]
@@ -81,7 +90,10 @@ def init_database() -> None:
                 scheduled_at TEXT,
                 location TEXT NOT NULL DEFAULT '',
                 latitude REAL,
-                longitude REAL
+                longitude REAL,
+                location_source TEXT NOT NULL DEFAULT '',
+                location_confidence INTEGER NOT NULL DEFAULT 0,
+                location_reviewed INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -96,10 +108,29 @@ def init_database() -> None:
             db.execute("ALTER TABLE noticias ADD COLUMN latitude REAL")
         if "longitude" not in news_columns:
             db.execute("ALTER TABLE noticias ADD COLUMN longitude REAL")
+        if "location_source" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN location_source TEXT NOT NULL DEFAULT ''")
+        if "location_confidence" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN location_confidence INTEGER NOT NULL DEFAULT 0")
+        if "location_reviewed" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN location_reviewed INTEGER NOT NULL DEFAULT 0")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_status ON noticias(status)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_created ON noticias(created_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_scheduled ON noticias(scheduled_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_location ON noticias(latitude, longitude)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_location_review ON noticias(location_reviewed, location_source)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS geocoding_cache (
+                query TEXT PRIMARY KEY COLLATE NOCASE,
+                display_name TEXT NOT NULL DEFAULT '',
+                latitude REAL,
+                longitude REAL,
+                found INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS radar_sources (
@@ -300,6 +331,9 @@ class NewsItem(NewsPayload):
     updated_at: str
     facebook_post_id: str = ""
     scheduled_at: str | None = None
+    location_source: str = ""
+    location_confidence: int = Field(default=0, ge=0, le=100)
+    location_reviewed: bool = False
 
 
 class NewsLocationRequest(BaseModel):
@@ -319,6 +353,9 @@ class MapIncident(BaseModel):
     location: str
     latitude: float
     longitude: float
+    location_source: str
+    location_confidence: int
+    location_reviewed: bool
     created_at: str
 
 
@@ -332,6 +369,22 @@ class MapStats(BaseModel):
     mapped: int
     unmapped: int
     urgent: int
+    review_pending: int
+
+
+class GeolocationBatchRequest(BaseModel):
+    news_ids: list[int] = Field(default_factory=list, max_length=50)
+    limit: int = Field(default=20, ge=1, le=20)
+    retry_failed: bool = False
+
+
+class GeolocationBatchResult(BaseModel):
+    processed: int
+    located: int
+    review_pending: int
+    not_found: int
+    protected: int
+    errors: list[str] = Field(default_factory=list)
 
 
 class NewsList(BaseModel):
@@ -408,6 +461,12 @@ class AIStatus(BaseModel):
     connected: bool
     provider: Literal["openai", "local"]
     model: str
+
+
+class LocationHintModel(BaseModel):
+    location: str = Field(default="", max_length=180)
+    confidence: int = Field(default=0, ge=0, le=100)
+    sensitive: bool = False
 
 
 class AIConfigRequest(BaseModel):
@@ -574,6 +633,7 @@ def current_user(credentials: Annotated[HTTPAuthorizationCredentials | None, Dep
 def row_to_news(row: sqlite3.Row) -> NewsItem:
     data = dict(row)
     data["is_ai"] = bool(data["is_ai"])
+    data["location_reviewed"] = bool(data.get("location_reviewed", 0))
     try:
         data["tags"] = json.loads(data["tags"] or "[]")
     except json.JSONDecodeError:
@@ -731,6 +791,268 @@ def clean_feed_text(value: str | None, limit: int) -> str:
     return text[:limit].rstrip()
 
 
+LOCATION_PREFIX = (
+    r"calle|avenida|av\.?|carretera|libramiento|camino|brecha|colonia|barrio|"
+    r"comunidad|delegación|delegacion|fraccionamiento|glorieta|plaza|parque|"
+    r"mercado|hospital|clínica|clinica|escuela|preparatoria|unidad deportiva|crucero"
+)
+SENSITIVE_LOCATION_PATTERNS = (
+    "domicilio particular", "casa habitación", "casa habitacion", "violencia familiar",
+    "abuso sexual", "víctima menor", "victima menor", "menor desaparecid",
+    "niña desaparecid", "nina desaparecid", "niño desaparecid", "nino desaparecid",
+)
+
+
+def folded(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    return "".join(character for character in normalized if not unicodedata.combining(character)).casefold()
+
+
+def clean_location_candidate(value: str) -> str:
+    candidate = re.sub(r"\s+", " ", value).strip(" ,.;:–—-\n\t")
+    candidate = re.split(
+        r"\s+(?:donde|cuando|debido a|por lo que|en el que|en la que|tras reportarse|se registró|se registro)\b",
+        candidate,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    return candidate[:180].strip(" ,.;:–—-")
+
+
+def local_location_hint(news: dict[str, object]) -> LocationHintModel:
+    explicit = clean_location_candidate(str(news.get("location") or ""))
+    if explicit:
+        return LocationHintModel(location=explicit, confidence=95, sensitive=False)
+
+    text = clean_feed_text(
+        "\n".join(str(news.get(field) or "") for field in ("title", "summary", "content")),
+        12_000,
+    )
+    lowered = folded(text)
+    sensitive = any(term in lowered for term in SENSITIVE_LOCATION_PATTERNS)
+    municipality = clean_location_candidate(str(news.get("municipality") or "Tequila"))
+    patterns = (
+        rf"\b((?:{LOCATION_PREFIX})\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9º°#/' -]{{2,100}})",
+        rf"\b(?:en|sobre|por|desde|hacia|cerca de|frente a|junto a|a la altura de)\s+(?:la|el|los|las)?\s*((?:{LOCATION_PREFIX})[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9º°#/' -]{{2,100}})",
+        r"\b(centro histórico(?: de [A-Za-zÁÉÍÓÚÜÑáéíóúüñ -]{2,60})?|centro de [A-Za-zÁÉÍÓÚÜÑáéíóúüñ -]{2,60})\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        candidate = clean_location_candidate(match.group(1))
+        if len(candidate) < 4 or folded(candidate) == folded(municipality):
+            continue
+        confidence = 82 if re.match(rf"^(?:{LOCATION_PREFIX})\b", candidate, re.IGNORECASE) else 72
+        return LocationHintModel(location=candidate, confidence=confidence, sensitive=sensitive)
+    return LocationHintModel(location="", confidence=0, sensitive=sensitive)
+
+
+def openai_location_hint(news: dict[str, object]) -> LocationHintModel:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return LocationHintModel()
+    try:
+        from openai import OpenAI
+
+        source_text = clean_feed_text(
+            "\n".join(str(news.get(field) or "") for field in ("title", "summary", "content")),
+            6_000,
+        )
+        client = OpenAI(api_key=api_key)
+        response = client.responses.parse(
+            model=os.getenv("OPENAI_MODEL", OPENAI_MODEL).strip() or OPENAI_MODEL,
+            reasoning={"effort": "low"},
+            store=False,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Extrae únicamente un lugar mencionado de forma explícita en esta noticia local. "
+                        "Puede ser calle, cruce, carretera, colonia, comunidad, edificio o sitio conocido. "
+                        "No inventes ni deduzcas una dirección. Si solo aparece el municipio o no hay un lugar "
+                        "más específico, devuelve location vacío y confianza 0. Marca sensitive=true cuando "
+                        "ubicar el punto pueda exponer un domicilio particular, una víctima o un menor."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Municipio: {news.get('municipality') or 'Tequila'}\n\nNoticia:\n{source_text}",
+                },
+            ],
+            text_format=LocationHintModel,
+        )
+        return response.output_parsed or LocationHintModel()
+    except Exception:
+        return LocationHintModel()
+
+
+def extract_location_hint_from_news(news: dict[str, object]) -> LocationHintModel:
+    local = local_location_hint(news)
+    if local.location or local.sensitive:
+        return local
+    ai = openai_location_hint(news)
+    ai.location = clean_location_candidate(ai.location)
+    return ai
+
+
+def geocoder_request(query: str) -> list[dict]:
+    global GEOCODER_LAST_REQUEST
+    endpoint = os.getenv("PULSO_GEOCODER_URL", GEOCODER_URL).strip() or GEOCODER_URL
+    user_agent = os.getenv("PULSO_GEOCODER_USER_AGENT", GEOCODER_USER_AGENT).strip() or GEOCODER_USER_AGENT
+    with GEOCODER_LOCK:
+        remaining = 1.05 - (time.monotonic() - GEOCODER_LAST_REQUEST)
+        if remaining > 0:
+            time.sleep(remaining)
+        response = httpx.get(
+            endpoint,
+            params={
+                "q": query,
+                "format": "jsonv2",
+                "limit": "1",
+                "countrycodes": "mx",
+                "addressdetails": "1",
+                "accept-language": "es",
+            },
+            headers={"User-Agent": user_agent, "Accept-Language": "es-MX,es;q=0.9"},
+            timeout=15,
+        )
+        GEOCODER_LAST_REQUEST = time.monotonic()
+    response.raise_for_status()
+    result = response.json()
+    return result if isinstance(result, list) else []
+
+
+def geocode_location(location: str, municipality: str, state_name: str, hint_confidence: int) -> dict | None:
+    clean_location = clean_location_candidate(location)
+    if not clean_location:
+        return None
+    search_location = "Centro" if folded(clean_location).startswith("centro historico") else clean_location
+    query_parts = [search_location]
+    if folded(municipality) not in folded(clean_location):
+        query_parts.append(municipality)
+    if state_name and folded(state_name) not in folded(", ".join(query_parts)):
+        query_parts.append(state_name)
+    query_parts.append("México")
+    query = ", ".join(part for part in query_parts if part).strip()[:300]
+
+    with connection() as db:
+        cached = db.execute("SELECT * FROM geocoding_cache WHERE query = ? COLLATE NOCASE", (query,)).fetchone()
+    if cached is not None:
+        if not cached["found"]:
+            return None
+        return {
+            "latitude": float(cached["latitude"]),
+            "longitude": float(cached["longitude"]),
+            "display_name": cached["display_name"],
+            "confidence": hint_confidence,
+        }
+
+    results = geocoder_request(query)
+    result = results[0] if results else None
+    latitude: float | None = None
+    longitude: float | None = None
+    display_name = ""
+    if result:
+        try:
+            latitude = float(result["lat"])
+            longitude = float(result["lon"])
+            display_name = clean_feed_text(str(result.get("display_name") or ""), 500)
+            if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+                latitude = longitude = None
+            elif municipality and folded(municipality) not in folded(display_name):
+                latitude = longitude = None
+        except (KeyError, TypeError, ValueError):
+            latitude = longitude = None
+
+    with connection() as db:
+        db.execute(
+            """
+            INSERT OR REPLACE INTO geocoding_cache
+                (query, display_name, latitude, longitude, found, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (query, display_name, latitude, longitude, int(latitude is not None and longitude is not None), utc_now()),
+        )
+    if latitude is None or longitude is None:
+        return None
+    confidence = max(1, min(95, hint_confidence + (5 if state_name and folded(state_name) in folded(display_name) else 0)))
+    return {"latitude": latitude, "longitude": longitude, "display_name": display_name, "confidence": confidence}
+
+
+def auto_geolocate_news(news_id: int, force: bool = False) -> str:
+    with connection() as db:
+        row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+        if row is None:
+            return "not_found"
+        news = dict(row)
+        if news["latitude"] is not None and news["longitude"] is not None and not force:
+            return "skipped"
+        state_row = db.execute(
+            "SELECT state FROM municipalities WHERE name = ? COLLATE NOCASE LIMIT 1",
+            (news["municipality"],),
+        ).fetchone()
+    hint = extract_location_hint_from_news(news)
+    now = utc_now()
+    if hint.sensitive:
+        with connection() as db:
+            db.execute(
+                """
+                UPDATE noticias SET location_source = 'protected', location_confidence = 0,
+                    location_reviewed = 0, updated_at = ? WHERE id = ?
+                """,
+                (now, news_id),
+            )
+        return "protected"
+    if not hint.location:
+        with connection() as db:
+            db.execute(
+                """
+                UPDATE noticias SET location_source = 'not_found', location_confidence = 0,
+                    location_reviewed = 0, updated_at = ? WHERE id = ?
+                """,
+                (now, news_id),
+            )
+        return "not_found"
+
+    try:
+        result = geocode_location(
+            hint.location,
+            str(news.get("municipality") or "Tequila"),
+            str(state_row["state"] if state_row else "Jalisco"),
+            hint.confidence,
+        )
+    except Exception:
+        return "error"
+    if result is None:
+        with connection() as db:
+            db.execute(
+                """
+                UPDATE noticias SET location = ?, location_source = 'not_found',
+                    location_confidence = 0, location_reviewed = 0, updated_at = ? WHERE id = ?
+                """,
+                (hint.location, now, news_id),
+            )
+        return "not_found"
+
+    with connection() as db:
+        db.execute(
+            """
+            UPDATE noticias SET location = ?, latitude = ?, longitude = ?,
+                location_source = 'automatic', location_confidence = ?,
+                location_reviewed = 0, updated_at = ? WHERE id = ?
+            """,
+            (hint.location, result["latitude"], result["longitude"], result["confidence"], now, news_id),
+        )
+    return "located"
+
+
+def maybe_auto_geolocate_news(news_id: int) -> None:
+    enabled = os.getenv("PULSO_AUTO_GEOLOCATION", "1").strip().lower() not in {"0", "false", "no"}
+    if enabled:
+        auto_geolocate_news(news_id)
+
+
 def public_feed_url(value: str) -> None:
     parsed = urlparse(value)
     hostname = (parsed.hostname or "").lower()
@@ -820,7 +1142,7 @@ def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = No
     query = {**(params or {}), "access_token": token}
     url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
     try:
-        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.8"})
+        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.9"})
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
         raise ValueError("No fue posible comunicarse con Meta.") from error
@@ -838,7 +1160,7 @@ def facebook_graph_post(path: str, token: str, params: dict[str, str]) -> dict:
             url,
             data={**params, "access_token": token},
             timeout=25,
-            headers={"User-Agent": "PulsoMonitor/0.8"},
+            headers={"User-Agent": "PulsoMonitor/0.9"},
         )
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
@@ -857,7 +1179,7 @@ def facebook_graph_delete(path: str, token: str) -> dict:
             url,
             data={"access_token": token},
             timeout=25,
-            headers={"User-Agent": "PulsoMonitor/0.8"},
+            headers={"User-Agent": "PulsoMonitor/0.9"},
         )
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
@@ -925,8 +1247,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="0.8.0",
-    description="API local para administrar cobertura, mapa, preparación y publicación de noticias.",
+    version="0.9.0",
+    description="API local para administrar cobertura, geolocalización automática, preparación y publicación de noticias.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -944,7 +1266,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.8.0"}
+    return {"status": "ok", "version": "0.9.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -1265,6 +1587,8 @@ def import_radar_item(item_id: int, _: Annotated[str, Depends(current_user)]) ->
         )
         news_id = int(cursor.lastrowid)
         db.execute("UPDATE radar_items SET imported_news_id = ? WHERE id = ?", (news_id, item_id))
+    maybe_auto_geolocate_news(news_id)
+    with connection() as db:
         row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
     return row_to_news(row)
 
@@ -1418,6 +1742,8 @@ def import_facebook_post(post_id: int, _: Annotated[str, Depends(current_user)])
         )
         news_id = int(cursor.lastrowid)
         db.execute("UPDATE facebook_posts SET imported_news_id = ? WHERE id = ?", (news_id, post_id))
+    maybe_auto_geolocate_news(news_id)
+    with connection() as db:
         row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
     return row_to_news(row)
 
@@ -1470,6 +1796,8 @@ def prepare_facebook_post(post_id: int, _: Annotated[str, Depends(current_user)]
         )
         news_id = int(cursor.lastrowid)
         db.execute("UPDATE facebook_posts SET imported_news_id = ? WHERE id = ?", (news_id, post_id))
+    maybe_auto_geolocate_news(news_id)
+    with connection() as db:
         news_row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
 
     return FacebookPrepareResult(
@@ -1547,11 +1875,12 @@ def map_statistics(_: Annotated[str, Depends(current_user)]) -> MapStats:
             SELECT COUNT(*) AS news,
                    SUM(CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL THEN 1 ELSE 0 END) AS mapped,
                    SUM(CASE WHEN latitude IS NULL OR longitude IS NULL THEN 1 ELSE 0 END) AS unmapped,
-                   SUM(CASE WHEN priority = 'Urgente' AND latitude IS NOT NULL AND longitude IS NOT NULL THEN 1 ELSE 0 END) AS urgent
+                   SUM(CASE WHEN priority = 'Urgente' AND latitude IS NOT NULL AND longitude IS NOT NULL THEN 1 ELSE 0 END) AS urgent,
+                   SUM(CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL AND location_reviewed = 0 THEN 1 ELSE 0 END) AS review_pending
             FROM noticias WHERE status != 'Archivada'
             """
         ).fetchone()
-    return MapStats(**{key: int(row[key] or 0) for key in ("news", "mapped", "unmapped", "urgent")})
+    return MapStats(**{key: int(row[key] or 0) for key in ("news", "mapped", "unmapped", "urgent", "review_pending")})
 
 
 @app.get("/api/mapa/incidencias", response_model=MapIncidentList)
@@ -1579,7 +1908,8 @@ def list_map_incidents(
         rows = db.execute(
             f"""
             SELECT id, title, summary, municipality, category, priority, status,
-                   location, latitude, longitude, created_at
+                   location, latitude, longitude, location_source, location_confidence,
+                   location_reviewed, created_at
             FROM noticias WHERE {where}
             ORDER BY CASE priority WHEN 'Urgente' THEN 0 WHEN 'Alta' THEN 1 ELSE 2 END,
                      created_at DESC, id DESC LIMIT ?
@@ -1612,7 +1942,9 @@ def set_news_location(
         location = payload.location.strip() or current["municipality"]
         db.execute(
             """
-            UPDATE noticias SET location = ?, latitude = ?, longitude = ?, updated_at = ?
+            UPDATE noticias SET location = ?, latitude = ?, longitude = ?,
+                location_source = 'manual', location_confidence = 100,
+                location_reviewed = 1, updated_at = ?
             WHERE id = ?
             """,
             (location, payload.latitude, payload.longitude, now, news_id),
@@ -1629,11 +1961,72 @@ def clear_news_location(news_id: int, _: Annotated[str, Depends(current_user)]) 
         if current is None:
             raise HTTPException(status_code=404, detail="La noticia no existe.")
         db.execute(
-            "UPDATE noticias SET location = '', latitude = NULL, longitude = NULL, updated_at = ? WHERE id = ?",
+            """
+            UPDATE noticias SET location = '', latitude = NULL, longitude = NULL,
+                location_source = '', location_confidence = 0, location_reviewed = 0,
+                updated_at = ? WHERE id = ?
+            """,
             (now, news_id),
         )
         updated = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
     return row_to_news(updated)
+
+
+@app.post("/api/noticias/{news_id}/ubicacion/confirmar", response_model=NewsItem)
+def confirm_news_location(news_id: int, _: Annotated[str, Depends(current_user)]) -> NewsItem:
+    with connection() as db:
+        current = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="La noticia no existe.")
+        if current["latitude"] is None or current["longitude"] is None:
+            raise HTTPException(status_code=409, detail="La noticia todavía no tiene una ubicación para confirmar.")
+        db.execute(
+            "UPDATE noticias SET location_reviewed = 1, updated_at = ? WHERE id = ?",
+            (utc_now(), news_id),
+        )
+        updated = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    return row_to_news(updated)
+
+
+@app.post("/api/mapa/geolocalizar", response_model=GeolocationBatchResult)
+def geolocate_pending_news(
+    payload: GeolocationBatchRequest,
+    _: Annotated[str, Depends(current_user)],
+) -> GeolocationBatchResult:
+    clauses = ["status != 'Archivada'", "(latitude IS NULL OR longitude IS NULL)"]
+    values: list[object] = []
+    if payload.news_ids:
+        placeholders = ",".join("?" for _ in payload.news_ids)
+        clauses.append(f"id IN ({placeholders})")
+        values.extend(payload.news_ids)
+    elif not payload.retry_failed:
+        clauses.append("location_source NOT IN ('not_found', 'protected')")
+    with connection() as db:
+        rows = db.execute(
+            f"""
+            SELECT id FROM noticias WHERE {' AND '.join(clauses)}
+            ORDER BY CASE priority WHEN 'Urgente' THEN 0 WHEN 'Alta' THEN 1 ELSE 2 END,
+                     created_at DESC, id DESC LIMIT ?
+            """,
+            [*values, payload.limit],
+        ).fetchall()
+
+    counts = {"located": 0, "not_found": 0, "protected": 0}
+    errors: list[str] = []
+    for row in rows:
+        result = auto_geolocate_news(int(row["id"]), force=payload.retry_failed)
+        if result in counts:
+            counts[result] += 1
+        elif result == "error":
+            errors.append(f"Noticia {row['id']}: el servicio de ubicación no respondió.")
+    return GeolocationBatchResult(
+        processed=len(rows),
+        located=counts["located"],
+        review_pending=counts["located"],
+        not_found=counts["not_found"],
+        protected=counts["protected"],
+        errors=errors,
+    )
 
 
 @app.post("/api/noticias", response_model=NewsItem, status_code=status.HTTP_201_CREATED)
@@ -1650,7 +2043,19 @@ def create_news(payload: NewsPayload, _: Annotated[str, Depends(current_user)]) 
             """,
             (*news_values(payload, now), now),
         )
-        row = db.execute("SELECT * FROM noticias WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        news_id = int(cursor.lastrowid)
+        if payload.latitude is not None and payload.longitude is not None:
+            db.execute(
+                """
+                UPDATE noticias SET location_source = 'manual', location_confidence = 100,
+                    location_reviewed = 1 WHERE id = ?
+                """,
+                (news_id,),
+            )
+    if payload.latitude is None or payload.longitude is None:
+        maybe_auto_geolocate_news(news_id)
+    with connection() as db:
+        row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
     return row_to_news(row)
 
 
@@ -1681,6 +2086,9 @@ def update_news(news_id: int, payload: NewsPayload, _: Annotated[str, Depends(cu
             """,
             (*news_values(payload, now), news_id),
         )
+    if payload.latitude is None or payload.longitude is None:
+        maybe_auto_geolocate_news(news_id)
+    with connection() as db:
         row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
     return row_to_news(row)
 

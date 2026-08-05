@@ -15,6 +15,7 @@ os.environ["PULSO_ADMIN_PASSWORD"] = test_admin_password
 os.environ["PULSO_SECRET_KEY"] = secrets.token_urlsafe(48)
 os.environ["PULSO_DATABASE_PATH"] = str(Path(temporary_directory.name) / "test.db")
 os.environ["PULSO_ENV_PATH"] = str(Path(temporary_directory.name) / ".env")
+os.environ["PULSO_AUTO_GEOLOCATION"] = "0"
 os.environ.pop("OPENAI_API_KEY", None)
 os.environ.pop("FACEBOOK_PAGE_ACCESS_TOKEN", None)
 os.environ.pop("FACEBOOK_PAGE_ID", None)
@@ -41,7 +42,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "0.8.0")
+        self.assertEqual(health.json()["version"], "0.9.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -82,7 +83,11 @@ class PulsoMonitorApiTests(unittest.TestCase):
             self.assertIn("location", columns)
             self.assertIn("latitude", columns)
             self.assertIn("longitude", columns)
+            self.assertIn("location_source", columns)
+            self.assertIn("location_confidence", columns)
+            self.assertIn("location_reviewed", columns)
             self.assertIn("municipalities", tables)
+            self.assertIn("geocoding_cache", tables)
 
     def test_facebook_connection_sync_and_import(self):
         def graph_response(path, _token, _params=None):
@@ -311,6 +316,8 @@ class PulsoMonitorApiTests(unittest.TestCase):
         )
         self.assertEqual(located.status_code, 200)
         self.assertAlmostEqual(located.json()["latitude"], 20.8817)
+        self.assertEqual(located.json()["location_source"], "manual")
+        self.assertTrue(located.json()["location_reviewed"])
 
         incidents = self.client.get(
             "/api/mapa/incidencias?priority=Urgente&municipality=Tequila",
@@ -329,6 +336,98 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertIsNone(cleared.json()["latitude"])
         remaining = self.client.get("/api/mapa/incidencias", headers=self.headers)
         self.assertFalse(any(item["id"] == news_id for item in remaining.json()["items"]))
+
+    def test_automatic_geolocation_and_confirmation(self):
+        payload = {
+            "title": "Reporte vial en la Glorieta del Jimador",
+            "summary": "Autoridades atienden el reporte en Tequila.",
+            "content": "La circulación es lenta en la Glorieta del Jimador.",
+            "source": "Reporte ciudadano",
+            "author": "Pulso Tequila",
+            "municipality": "Tequila",
+            "category": "Servicios",
+            "priority": "Alta",
+            "status": "Pendiente",
+            "image_url": "",
+            "url": "",
+            "published_at": None,
+            "is_ai": False,
+            "tags": ["vialidad", "tequila"],
+            "location": "",
+            "latitude": None,
+            "longitude": None,
+        }
+        created = self.client.post("/api/noticias", headers=self.headers, json=payload)
+        self.assertEqual(created.status_code, 201)
+        news_id = created.json()["id"]
+        hint = main.LocationHintModel(location="Glorieta del Jimador", confidence=88, sensitive=False)
+        coordinates = {
+            "latitude": 20.8799,
+            "longitude": -103.8351,
+            "display_name": "Glorieta del Jimador, Tequila, Jalisco, México",
+            "confidence": 93,
+        }
+        with patch.object(main, "extract_location_hint_from_news", return_value=hint), patch.object(
+            main, "geocode_location", return_value=coordinates
+        ):
+            automatic = self.client.post(
+                "/api/mapa/geolocalizar",
+                headers=self.headers,
+                json={"news_ids": [news_id], "limit": 1},
+            )
+        self.assertEqual(automatic.status_code, 200)
+        self.assertEqual(automatic.json()["located"], 1)
+        news = self.client.get(f"/api/noticias/{news_id}", headers=self.headers).json()
+        self.assertEqual(news["location_source"], "automatic")
+        self.assertEqual(news["location_confidence"], 93)
+        self.assertFalse(news["location_reviewed"])
+
+        confirmed = self.client.post(
+            f"/api/noticias/{news_id}/ubicacion/confirmar",
+            headers=self.headers,
+        )
+        self.assertEqual(confirmed.status_code, 200)
+        self.assertTrue(confirmed.json()["location_reviewed"])
+        stats = self.client.get("/api/mapa/estadisticas", headers=self.headers).json()
+        self.assertGreaterEqual(stats["mapped"], 1)
+
+    def test_sensitive_geolocation_is_never_sent_to_geocoder(self):
+        payload = {
+            "title": "Reporte protegido para prueba",
+            "summary": "El caso involucra el domicilio particular de una víctima menor.",
+            "content": "La ubicación debe mantenerse reservada.",
+            "source": "Prueba",
+            "author": "Pulso Tequila",
+            "municipality": "Tequila",
+            "category": "Seguridad",
+            "priority": "Alta",
+            "status": "En revisión",
+            "image_url": "",
+            "url": "",
+            "published_at": None,
+            "is_ai": False,
+            "tags": ["privacidad"],
+            "location": "",
+            "latitude": None,
+            "longitude": None,
+        }
+        created = self.client.post("/api/noticias", headers=self.headers, json=payload)
+        news_id = created.json()["id"]
+        protected_hint = main.LocationHintModel(location="", confidence=0, sensitive=True)
+        with patch.object(main, "extract_location_hint_from_news", return_value=protected_hint), patch.object(
+            main, "geocode_location"
+        ) as geocoder_mock:
+            result = self.client.post(
+                "/api/mapa/geolocalizar",
+                headers=self.headers,
+                json={"news_ids": [news_id], "limit": 1},
+            )
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["protected"], 1)
+        geocoder_mock.assert_not_called()
+        news = self.client.get(f"/api/noticias/{news_id}", headers=self.headers).json()
+        self.assertEqual(news["location_source"], "protected")
+        self.assertIsNone(news["latitude"])
 
     def test_radar_scan_avoids_duplicates_and_imports_news(self):
         source = self.client.post(

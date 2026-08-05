@@ -1,4 +1,4 @@
-# Pulso Monitor v0.8
+# Pulso Monitor v0.9
 
 Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye dashboard, gestión editorial, Asistente IA, Radar de fuentes y conexión autorizada con Facebook.
 
@@ -37,6 +37,10 @@ Centro local de administración, redacción y detección de noticias para **Puls
 - Marcadores diferenciados por prioridad y estado editorial.
 - Filtros geográficos por municipio, estado y prioridad.
 - Edición o retiro de una ubicación sin eliminar la noticia.
+- Detección automática de calles, carreteras, colonias, comunidades y lugares mencionados.
+- Geocodificación de bajo volumen con caché local y un máximo de una consulta por segundo.
+- Confirmación editorial de cada marcador sugerido automáticamente.
+- Exclusión automática de posibles domicilios particulares, víctimas y menores.
 
 ## Instalación rápida en Windows
 
@@ -98,9 +102,11 @@ Los nombres usados previamente en Noticias y Radar se incorporan automáticament
 
 ## Mapa de incidencias
 
-El módulo **Mapa** permite seleccionar una noticia y colocarla visualmente en el punto correspondiente. Las noticias existentes se conservan sin ubicación hasta que el administrador decida marcarlas. También es posible escribir una referencia y las coordenadas manualmente.
+El módulo **Mapa** intenta ubicar automáticamente las noticias nuevas cuando contienen una referencia geográfica explícita. También incluye el botón `Ubicar automáticamente` para procesar noticias anteriores. Cada marcador automático aparece como **Por confirmar** hasta que el administrador lo revise; siempre es posible editarlo, moverlo o retirarlo sin eliminar la noticia.
 
-El mapa utiliza Leaflet y las teselas estándar de OpenStreetMap con atribución visible. Requiere conexión a internet y está destinado a visualización interactiva normal; no realiza descargas masivas ni ofrece mapas sin conexión. Por privacidad, se recomienda usar ubicaciones aproximadas cuando una noticia involucre domicilios particulares, víctimas o menores de edad.
+La detección envía al geocodificador solamente una referencia breve del lugar junto con municipio, estado y país; nunca envía la noticia completa. Los reportes que puedan revelar domicilios particulares, víctimas o menores se excluyen automáticamente y requieren ubicación manual aproximada.
+
+El mapa utiliza Leaflet, las teselas estándar de OpenStreetMap y Nominatim con atribución visible. Requiere conexión a internet y está destinado a un solo panel local de bajo volumen. Las búsquedas se ejecutan en un único hilo, con un máximo de una solicitud por segundo y caché local; no hay autocompletado, consultas periódicas ni descargas masivas. El servicio puede cambiarse mediante `PULSO_GEOCODER_URL` sin modificar el programa. Consulta las políticas oficiales de [teselas](https://operations.osmfoundation.org/policies/tiles/) y [Nominatim](https://operations.osmfoundation.org/policies/nominatim/).
 
 ## Inicio manual
 
@@ -149,4 +155,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v0.8 administra noticias, cobertura municipal, geolocalización editorial, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Permite ubicar reportes en un mapa, aprobarlos, programarlos o publicarlos en la página conectada. Ningún contenido se envía sin confirmación humana.
+La v0.9 administra noticias, cobertura municipal, geolocalización automática supervisada, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Permite detectar lugares explícitos, revisar marcadores, aprobar noticias, programarlas o publicarlas en la página conectada. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.

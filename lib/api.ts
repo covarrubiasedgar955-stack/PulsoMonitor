@@ -7,6 +7,7 @@ import type {
   FacebookPublishResult,
   FacebookStatus,
   FacebookSyncResult,
+  GeolocationBatchResult,
   LoginResponse,
   MapIncidentList,
   MapStats,
@@ -157,6 +158,17 @@ export const api = {
 
   clearNewsLocation(id: number) {
     return request<NewsItem>(`/api/noticias/${id}/ubicacion`, { method: "DELETE" });
+  },
+
+  confirmNewsLocation(id: number) {
+    return request<NewsItem>(`/api/noticias/${id}/ubicacion/confirmar`, { method: "POST" });
+  },
+
+  autoGeolocateNews(limit = 20, retryFailed = false) {
+    return request<GeolocationBatchResult>("/api/mapa/geolocalizar", {
+      method: "POST",
+      body: JSON.stringify({ limit, retry_failed: retryFailed, news_ids: [] }),
+    });
   },
 
   publishNewsToFacebook(id: number, scheduledAt: string | null = null) {

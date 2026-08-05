@@ -114,7 +114,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </nav>
         <div className="sidebar-footer">
           <span className="status-dot" /> API local
-          <small>Versión 0.8</small>
+          <small>Versión 0.9</small>
         </div>
       </aside>
       {menuOpen && <button className="backdrop" aria-label="Cerrar menú" onClick={() => setMenuOpen(false)} />}
