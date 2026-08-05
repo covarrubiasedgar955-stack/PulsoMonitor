@@ -4,6 +4,7 @@ import type {
   AIStatus,
   FacebookPostList,
   FacebookPrepareResult,
+  FacebookPublishResult,
   FacebookStatus,
   FacebookSyncResult,
   LoginResponse,
@@ -106,6 +107,17 @@ export const api = {
 
   deleteNews(id: number) {
     return request<void>(`/api/noticias/${id}`, { method: "DELETE" });
+  },
+
+  publishNewsToFacebook(id: number, scheduledAt: string | null = null) {
+    return request<FacebookPublishResult>(`/api/noticias/${id}/publicar-facebook`, {
+      method: "POST",
+      body: JSON.stringify({ scheduled_at: scheduledAt }),
+    });
+  },
+
+  cancelFacebookSchedule(id: number) {
+    return request<NewsItem>(`/api/noticias/${id}/programacion-facebook`, { method: "DELETE" });
   },
 
   aiStatus() {
