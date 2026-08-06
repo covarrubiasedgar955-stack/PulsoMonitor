@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { FormEvent, ReactNode, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import type { UserInfo } from "@/types/news";
 
 const navigation = [
   { href: "/", label: "Dashboard", icon: "▦", ready: true },
@@ -14,10 +15,11 @@ const navigation = [
   { href: "/publicaciones", label: "Publicaciones", icon: "◫", ready: true },
   { href: "/municipios", label: "Municipios", icon: "⌂", ready: true },
   { href: "/mapa", label: "Mapa", icon: "⌖", ready: true },
-  { href: "#", label: "Configuración", icon: "⚙", ready: false },
+  { href: "/usuarios", label: "Usuarios", icon: "♟", ready: true, adminOnly: true },
+  { href: "/configuracion", label: "Configuración", icon: "⚙", ready: true, adminOnly: true },
 ];
 
-function Login({ onSuccess }: { onSuccess: () => void }) {
+function Login({ onSuccess }: { onSuccess: (user: UserInfo) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -31,7 +33,7 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
       const result = await api.login(username, password);
       localStorage.setItem("pulso_token", result.access_token);
       localStorage.setItem("pulso_user", JSON.stringify(result.user));
-      onSuccess();
+      onSuccess(result.user);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No se pudo iniciar sesión.");
     } finally {
@@ -69,21 +71,31 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
 export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [user, setUser] = useState<UserInfo | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
-    const sync = () => setAuthenticated(Boolean(localStorage.getItem("pulso_token")));
+    const sync = () => {
+      const active = Boolean(localStorage.getItem("pulso_token"));
+      setAuthenticated(active);
+      try {
+        setUser(active ? JSON.parse(localStorage.getItem("pulso_user") || "null") : null);
+      } catch {
+        setUser(null);
+      }
+    };
     sync();
     window.addEventListener("pulso:logout", sync);
     return () => window.removeEventListener("pulso:logout", sync);
   }, []);
 
   if (authenticated === null) return <div className="splash">Cargando Pulso Monitor…</div>;
-  if (!authenticated) return <Login onSuccess={() => setAuthenticated(true)} />;
+  if (!authenticated) return <Login onSuccess={(signedInUser) => { setUser(signedInUser); setAuthenticated(true); }} />;
 
   function logout() {
     localStorage.removeItem("pulso_token");
     localStorage.removeItem("pulso_user");
+    setUser(null);
     setAuthenticated(false);
   }
 
@@ -95,7 +107,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <div><strong>Pulso</strong><span>Monitor</span></div>
         </div>
         <nav aria-label="Navegación principal">
-          {navigation.map((item) =>
+          {navigation.filter((item) => !item.adminOnly || user?.role === "Administrador").map((item) =>
             item.ready ? (
               <Link
                 key={item.label}
@@ -114,7 +126,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </nav>
         <div className="sidebar-footer">
           <span className="status-dot" /> API local
-          <small>Versión 0.9</small>
+          <small>Versión 1.0</small>
         </div>
       </aside>
       {menuOpen && <button className="backdrop" aria-label="Cerrar menú" onClick={() => setMenuOpen(false)} />}
@@ -126,8 +138,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
             <span>Centro inteligente de monitoreo de noticias</span>
           </div>
           <div className="profile">
-            <div className="avatar">E</div>
-            <div><strong>Edgar</strong><span>Administrador</span></div>
+            <div className="avatar">{user?.name?.charAt(0).toUpperCase() || "U"}</div>
+            <div><strong>{user?.name || "Usuario"}</strong><span>{user?.role || "Sesión activa"}</span></div>
             <button onClick={logout} title="Cerrar sesión">Salir</button>
           </div>
         </header>

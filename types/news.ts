@@ -114,7 +114,61 @@ export interface GeolocationBatchResult {
 export interface LoginResponse {
   access_token: string;
   token_type: "bearer";
-  user: { name: string; role: string };
+  user: UserInfo;
+}
+
+export type UserRole = "Administrador" | "Editor" | "Reportero";
+
+export interface UserInfo {
+  id: number;
+  username: string;
+  name: string;
+  role: UserRole;
+}
+
+export interface UserRecord extends UserInfo {
+  active: boolean;
+  last_login: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserCreateInput {
+  username: string;
+  name: string;
+  role: UserRole;
+  password: string;
+  active: boolean;
+}
+
+export interface UserUpdateInput {
+  name: string;
+  role: UserRole;
+  active: boolean;
+}
+
+export interface AppSettings {
+  media_name: string;
+  tagline: string;
+  default_municipality: string;
+  contact_email: string;
+  updated_at: string;
+}
+
+export interface ActivityItem {
+  id: number;
+  user_name: string;
+  action: string;
+  entity: string;
+  entity_id: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface BackupInfo {
+  name: string;
+  size: number;
+  created_at: string;
 }
 
 export type AITone = "Informativo" | "Urgente" | "Institucional" | "Cercano";

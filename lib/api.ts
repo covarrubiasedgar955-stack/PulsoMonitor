@@ -1,7 +1,10 @@
 import type {
+  ActivityItem,
   AIAnalysis,
   AIAnalyzeInput,
   AIStatus,
+  AppSettings,
+  BackupInfo,
   FacebookPostList,
   FacebookPrepareResult,
   FacebookPublishResult,
@@ -22,6 +25,10 @@ import type {
   RadarSource,
   RadarSourceInput,
   RadarStats,
+  UserCreateInput,
+  UserInfo,
+  UserRecord,
+  UserUpdateInput,
 } from "@/types/news";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
@@ -81,6 +88,72 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ username, password }),
     });
+  },
+
+  currentUser() {
+    return request<UserInfo>("/api/auth/me");
+  },
+
+  listUsers() {
+    return request<UserRecord[]>("/api/usuarios");
+  },
+
+  createUser(payload: UserCreateInput) {
+    return request<UserRecord>("/api/usuarios", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  updateUser(id: number, payload: UserUpdateInput) {
+    return request<UserRecord>(`/api/usuarios/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  updateUserPassword(id: number, password: string) {
+    return request<void>(`/api/usuarios/${id}/contrasena`, {
+      method: "PUT",
+      body: JSON.stringify({ password }),
+    });
+  },
+
+  getSettings() {
+    return request<AppSettings>("/api/configuracion");
+  },
+
+  updateSettings(payload: AppSettings) {
+    return request<AppSettings>("/api/configuracion", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  listActivity(limit = 30) {
+    return request<ActivityItem[]>(`/api/configuracion/actividad?limit=${limit}`);
+  },
+
+  listBackups() {
+    return request<BackupInfo[]>("/api/configuracion/respaldos");
+  },
+
+  createBackup() {
+    return request<BackupInfo>("/api/configuracion/respaldos", { method: "POST" });
+  },
+
+  async downloadBackup(filename: string) {
+    const authToken = token();
+    const response = await fetch(`${API_URL}/api/configuracion/respaldos/${encodeURIComponent(filename)}`, {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+    if (!response.ok) throw new ApiError("No se pudo descargar el respaldo.", response.status);
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
   },
 
   stats() {

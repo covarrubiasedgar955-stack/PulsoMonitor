@@ -15,6 +15,7 @@ os.environ["PULSO_ADMIN_PASSWORD"] = test_admin_password
 os.environ["PULSO_SECRET_KEY"] = secrets.token_urlsafe(48)
 os.environ["PULSO_DATABASE_PATH"] = str(Path(temporary_directory.name) / "test.db")
 os.environ["PULSO_ENV_PATH"] = str(Path(temporary_directory.name) / ".env")
+os.environ["PULSO_BACKUP_DIR"] = str(Path(temporary_directory.name) / "backups")
 os.environ["PULSO_AUTO_GEOLOCATION"] = "0"
 os.environ.pop("OPENAI_API_KEY", None)
 os.environ.pop("FACEBOOK_PAGE_ACCESS_TOKEN", None)
@@ -42,7 +43,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "0.9.0")
+        self.assertEqual(health.json()["version"], "1.0.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -88,6 +89,110 @@ class PulsoMonitorApiTests(unittest.TestCase):
             self.assertIn("location_reviewed", columns)
             self.assertIn("municipalities", tables)
             self.assertIn("geocoding_cache", tables)
+            self.assertIn("users", tables)
+            self.assertIn("app_settings", tables)
+            self.assertIn("activity_log", tables)
+
+    def test_configuration_activity_and_backup(self):
+        configuration = self.client.get("/api/configuracion", headers=self.headers)
+        self.assertEqual(configuration.status_code, 200)
+        payload = configuration.json()
+        payload["contact_email"] = "redaccion@pulsotequila.mx"
+        updated = self.client.put("/api/configuracion", headers=self.headers, json=payload)
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["contact_email"], "redaccion@pulsotequila.mx")
+
+        created = self.client.post("/api/configuracion/respaldos", headers=self.headers)
+        self.assertEqual(created.status_code, 201)
+        backup_name = created.json()["name"]
+        self.assertTrue((main.BACKUP_DIR / backup_name).is_file())
+        backups = self.client.get("/api/configuracion/respaldos", headers=self.headers)
+        self.assertTrue(any(item["name"] == backup_name for item in backups.json()))
+        downloaded = self.client.get(f"/api/configuracion/respaldos/{backup_name}", headers=self.headers)
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertGreater(len(downloaded.content), 0)
+        activity = self.client.get("/api/configuracion/actividad", headers=self.headers)
+        self.assertEqual(activity.status_code, 200)
+        self.assertTrue(any(item["action"] == "Creó respaldo" for item in activity.json()))
+
+    def test_users_roles_passwords_and_revoked_sessions(self):
+        created = self.client.post(
+            "/api/usuarios",
+            headers=self.headers,
+            json={
+                "username": "editora",
+                "name": "Editora de prueba",
+                "role": "Editor",
+                "password": "ClaveInicial-2026",
+                "active": True,
+            },
+        )
+        self.assertEqual(created.status_code, 201)
+        editor_id = created.json()["id"]
+        signed_in = self.client.post(
+            "/api/auth/login", json={"username": "editora", "password": "ClaveInicial-2026"}
+        )
+        self.assertEqual(signed_in.status_code, 200)
+        editor_headers = {"Authorization": f"Bearer {signed_in.json()['access_token']}"}
+        self.assertEqual(self.client.get("/api/usuarios", headers=editor_headers).status_code, 403)
+
+        changed = self.client.put(
+            f"/api/usuarios/{editor_id}/contrasena",
+            headers=self.headers,
+            json={"password": "ClaveNueva-Segura-2026"},
+        )
+        self.assertEqual(changed.status_code, 204)
+        self.assertEqual(self.client.get("/api/auth/me", headers=editor_headers).status_code, 401)
+        old_login = self.client.post(
+            "/api/auth/login", json={"username": "editora", "password": "ClaveInicial-2026"}
+        )
+        self.assertEqual(old_login.status_code, 401)
+        new_login = self.client.post(
+            "/api/auth/login", json={"username": "editora", "password": "ClaveNueva-Segura-2026"}
+        )
+        self.assertEqual(new_login.status_code, 200)
+        self.assertEqual(new_login.json()["user"]["role"], "Editor")
+
+        reporter = self.client.post(
+            "/api/usuarios",
+            headers=self.headers,
+            json={
+                "username": "reportero",
+                "name": "Reportero de prueba",
+                "role": "Reportero",
+                "password": "ClaveReportero-2026",
+                "active": True,
+            },
+        )
+        reporter_login = self.client.post(
+            "/api/auth/login", json={"username": "reportero", "password": "ClaveReportero-2026"}
+        )
+        reporter_headers = {"Authorization": f"Bearer {reporter_login.json()['access_token']}"}
+        payload = {
+            "title": "Noticia que requiere aprobación editorial",
+            "summary": "Resumen de prueba",
+            "content": "Contenido de prueba",
+            "source": "Prueba",
+            "author": "Reportero",
+            "municipality": "Tequila",
+            "category": "General",
+            "priority": "Media",
+            "status": "Publicada",
+            "image_url": "",
+            "url": "",
+            "published_at": None,
+            "is_ai": False,
+            "tags": [],
+        }
+        self.assertEqual(self.client.post("/api/noticias", headers=reporter_headers, json=payload).status_code, 403)
+        self.assertEqual(
+            self.client.post(
+                "/api/municipios",
+                headers=reporter_headers,
+                json={"name": "Zona restringida", "region": "Valles", "state": "Jalisco", "active": True},
+            ).status_code,
+            403,
+        )
 
     def test_facebook_connection_sync_and_import(self):
         def graph_response(path, _token, _params=None):
