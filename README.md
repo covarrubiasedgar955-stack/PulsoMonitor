@@ -1,4 +1,4 @@
-# Pulso Monitor v0.9
+# Pulso Monitor v1.0
 
 Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye dashboard, gestión editorial, Asistente IA, Radar de fuentes y conexión autorizada con Facebook.
 
@@ -41,6 +41,11 @@ Centro local de administración, redacción y detección de noticias para **Puls
 - Geocodificación de bajo volumen con caché local y un máximo de una consulta por segundo.
 - Confirmación editorial de cada marcador sugerido automáticamente.
 - Exclusión automática de posibles domicilios particulares, víctimas y menores.
+- Usuarios reales con roles de Administrador, Editor y Reportero.
+- Contraseñas protegidas con scrypt, sal única y revocación de sesiones al cambiar permisos o contraseña.
+- Panel de configuración con identidad del medio y municipio principal.
+- Registro de actividad administrativa y accesos recientes.
+- Respaldos verificables de SQLite, descarga local y conservación de las 10 copias más recientes.
 
 ## Instalación rápida en Windows
 
@@ -49,7 +54,21 @@ Centro local de administración, redacción y detección de noticias para **Puls
 3. Haz doble clic en `iniciar.bat`.
 4. Se abrirá `http://127.0.0.1:3010` en el navegador.
 
-Durante la instalación se genera automáticamente una contraseña única. Los datos aparecen en `ACCESO.txt`, un archivo local excluido de Git. Guárdalo en un lugar seguro y no lo compartas.
+Durante una instalación nueva se genera automáticamente una contraseña única. Los datos aparecen en `ACCESO.txt`, un archivo local excluido de Git. En una actualización se conservan los usuarios y contraseñas existentes. Guárdalo en un lugar seguro y no lo compartas.
+
+## Usuarios y permisos
+
+El administrador puede crear cuentas desde **Usuarios** y asignar uno de estos perfiles:
+
+- **Administrador:** usuarios, configuración, conexiones externas, noticias y publicación.
+- **Editor:** revisión editorial, eliminación, programación y publicación.
+- **Reportero:** creación y preparación de contenido sin acceso a administración ni publicación.
+
+Las contraseñas no se almacenan como texto. Al cambiar una contraseña, desactivar una cuenta o modificar su rol, las sesiones anteriores dejan de ser válidas.
+
+## Configuración y respaldos
+
+El módulo **Configuración** permite editar la identidad del medio, consultar la actividad reciente y crear copias de seguridad. Los respaldos se guardan en `backend\backups`, pueden descargarse desde el panel y se limitan automáticamente a las 10 copias más recientes.
 
 ## Asistente IA
 
@@ -144,6 +163,8 @@ app/facebook/        Conexión autorizada con una página de Facebook
 app/publicaciones/   Aprobación, programación y publicación en Facebook
 app/municipios/      Cobertura e indicadores por municipio
 app/mapa/            Mapa interactivo de incidencias
+app/usuarios/        Usuarios, roles y contraseñas
+app/configuracion/   Identidad, actividad y respaldos
 components/          Navegación e inicio de sesión
 lib/                 Cliente de la API
 types/               Tipos de noticias
@@ -155,4 +176,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v0.9 administra noticias, cobertura municipal, geolocalización automática supervisada, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Permite detectar lugares explícitos, revisar marcadores, aprobar noticias, programarlas o publicarlas en la página conectada. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.
+La v1.0 administra noticias, equipo editorial, permisos, cobertura municipal, geolocalización automática supervisada, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Incorpora auditoría y respaldos sin perder los datos de versiones anteriores. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.

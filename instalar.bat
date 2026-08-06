@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 echo.
 echo ========================================
-echo   INSTALANDO PULSO MONITOR v0.9
+echo   INSTALANDO PULSO MONITOR v1.0
 echo ========================================
 echo.
 
@@ -34,8 +34,9 @@ echo.
 echo ========================================
 echo   INSTALACION TERMINADA
 echo ========================================
-echo Tus datos de acceso se guardaron en ACCESO.txt
+echo Tus datos y usuarios existentes se conservaron.
+echo En una instalacion nueva, el acceso inicial se guarda en ACCESO.txt.
 echo Ahora abre iniciar.bat
 echo.
-start "" notepad.exe "%~dp0ACCESO.txt"
+if exist "%~dp0ACCESO.txt" start "" notepad.exe "%~dp0ACCESO.txt"
 pause

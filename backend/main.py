@@ -25,6 +25,7 @@ import feedparser
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from dotenv import load_dotenv, set_key, unset_key
 from pydantic import BaseModel, Field, field_validator
@@ -33,6 +34,7 @@ BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = Path(os.getenv("PULSO_ENV_PATH", str(BASE_DIR / ".env")))
 load_dotenv(ENV_PATH)
 DATABASE_PATH = Path(os.getenv("PULSO_DATABASE_PATH", str(BASE_DIR / "pulso_monitor.db")))
+BACKUP_DIR = Path(os.getenv("PULSO_BACKUP_DIR", str(BASE_DIR / "backups")))
 ADMIN_USER = os.getenv("PULSO_ADMIN_USER", "").strip()
 ADMIN_PASSWORD = os.getenv("PULSO_ADMIN_PASSWORD", "").strip()
 SECRET_KEY = os.getenv("PULSO_SECRET_KEY", "").strip()
@@ -42,7 +44,7 @@ TOKEN_TTL_SECONDS = 12 * 60 * 60
 GEOCODER_URL = os.getenv("PULSO_GEOCODER_URL", "https://nominatim.openstreetmap.org/search").strip()
 GEOCODER_USER_AGENT = os.getenv(
     "PULSO_GEOCODER_USER_AGENT",
-    "PulsoMonitor/0.9 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
+    "PulsoMonitor/1.0 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
 ).strip()
 GEOCODER_LOCK = threading.Lock()
 GEOCODER_LAST_REQUEST = 0.0
@@ -51,6 +53,7 @@ NewsStatus = Literal["Pendiente", "En revisión", "Programada", "Publicada", "Ar
 NewsPriority = Literal["Baja", "Media", "Alta", "Urgente"]
 AICategory = Literal["General", "Seguridad", "Política", "Deportes", "Eventos", "Turismo", "Servicios", "Comunidad"]
 AITone = Literal["Informativo", "Urgente", "Institucional", "Cercano"]
+UserRole = Literal["Administrador", "Editor", "Reportero"]
 
 
 def utc_now() -> str:
@@ -64,7 +67,33 @@ def connection() -> sqlite3.Connection:
     return db
 
 
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    derived = hashlib.scrypt(
+        password.encode("utf-8"), salt=salt, n=2**15, r=8, p=3,
+        maxmem=64 * 1024 * 1024, dklen=32,
+    )
+    return f"scrypt$32768$8$3${b64url(salt)}${b64url(derived)}"
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm, raw_n, raw_r, raw_p, raw_salt, raw_hash = encoded.split("$", 5)
+        if algorithm != "scrypt":
+            return False
+        expected = b64url_decode(raw_hash)
+        calculated = hashlib.scrypt(
+            password.encode("utf-8"), salt=b64url_decode(raw_salt),
+            n=int(raw_n), r=int(raw_r), p=int(raw_p),
+            maxmem=64 * 1024 * 1024, dklen=len(expected),
+        )
+        return secrets.compare_digest(calculated, expected)
+    except (ValueError, TypeError):
+        return False
+
+
 def init_database() -> None:
+    bootstrapped_admin = False
     with connection() as db:
         db.execute(
             """
@@ -131,6 +160,59 @@ def init_database() -> None:
             )
             """
         )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                name TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'Reportero',
+                password_hash TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                token_version INTEGER NOT NULL DEFAULT 1,
+                last_login TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_users_active ON users(active, name)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                media_name TEXT NOT NULL DEFAULT 'Pulso Tequila',
+                tagline TEXT NOT NULL DEFAULT 'Centro inteligente de monitoreo de noticias',
+                default_municipality TEXT NOT NULL DEFAULT 'Tequila',
+                contact_email TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT OR IGNORE INTO app_settings (
+                id, media_name, tagline, default_municipality, contact_email, updated_at
+            ) VALUES (1, 'Pulso Tequila', 'Centro inteligente de monitoreo de noticias', 'Tequila', '', ?)
+            """,
+            (utc_now(),),
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                user_name TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL,
+                entity TEXT NOT NULL DEFAULT '',
+                entity_id TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at DESC)")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS radar_sources (
@@ -236,9 +318,26 @@ def init_database() -> None:
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_facebook_posts_detected ON facebook_posts(detected_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_facebook_posts_imported ON facebook_posts(imported_news_id)")
+        user_count = int(db.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+        if user_count == 0:
+            if not ADMIN_USER or not ADMIN_PASSWORD:
+                raise RuntimeError("No existe un administrador inicial. Ejecuta instalar.bat nuevamente.")
+            now = utc_now()
+            db.execute(
+                """
+                INSERT INTO users (
+                    username, name, role, password_hash, active, token_version, created_at, updated_at
+                ) VALUES (?, 'Edgar', 'Administrador', ?, 1, 1, ?, ?)
+                """,
+                (ADMIN_USER, hash_password(ADMIN_PASSWORD), now, now),
+            )
+            bootstrapped_admin = True
         count = db.execute("SELECT COUNT(*) FROM noticias").fetchone()[0]
         if count == 0:
             seed_database(db)
+    if bootstrapped_admin and ENV_PATH.exists():
+        unset_key(str(ENV_PATH), "PULSO_ADMIN_PASSWORD")
+        os.environ.pop("PULSO_ADMIN_PASSWORD", None)
 
 
 def seed_database(db: sqlite3.Connection) -> None:
@@ -282,13 +381,91 @@ def seed_database(db: sqlite3.Connection) -> None:
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=3, max_length=40)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class UserInfo(BaseModel):
+    id: int
+    username: str
     name: str
-    role: str
+    role: UserRole
+
+
+class AuthenticatedUser(UserInfo):
+    token_version: int
+
+
+class UserRecord(UserInfo):
+    active: bool
+    last_login: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=40)
+    name: str = Field(min_length=2, max_length=100)
+    role: UserRole = "Reportero"
+    password: str = Field(min_length=10, max_length=128)
+    active: bool = True
+
+    @field_validator("username")
+    @classmethod
+    def valid_username(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{3,40}", cleaned):
+            raise ValueError("Usa letras, números, punto, guion o guion bajo.")
+        return cleaned
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str) -> str:
+        return value.strip()
+
+
+class UserUpdateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    role: UserRole
+    active: bool
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str) -> str:
+        return value.strip()
+
+
+class UserPasswordRequest(BaseModel):
+    password: str = Field(min_length=10, max_length=128)
+
+
+class AppSettings(BaseModel):
+    media_name: str = Field(min_length=2, max_length=100)
+    tagline: str = Field(min_length=2, max_length=180)
+    default_municipality: str = Field(min_length=2, max_length=100)
+    contact_email: str = Field(default="", max_length=180)
+    updated_at: str = ""
+
+    @field_validator("media_name", "tagline", "default_municipality", "contact_email")
+    @classmethod
+    def clean_setting(cls, value: str) -> str:
+        return value.strip()
+
+
+class ActivityItem(BaseModel):
+    id: int
+    user_name: str
+    action: str
+    entity: str
+    entity_id: str
+    detail: str
+    created_at: str
+
+
+class BackupInfo(BaseModel):
+    name: str
+    size: int
+    created_at: str
 
 
 class LoginResponse(BaseModel):
@@ -605,8 +782,13 @@ def b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
-def create_token(username: str) -> str:
-    payload = b64url(json.dumps({"sub": username, "exp": int(time.time()) + TOKEN_TTL_SECONDS}, separators=(",", ":")).encode())
+def create_token(user: sqlite3.Row) -> str:
+    payload = b64url(json.dumps({
+        "uid": int(user["id"]),
+        "sub": str(user["username"]),
+        "ver": int(user["token_version"]),
+        "exp": int(time.time()) + TOKEN_TTL_SECONDS,
+    }, separators=(",", ":")).encode())
     signature = b64url(hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).digest())
     return f"{payload}.{signature}"
 
@@ -614,7 +796,7 @@ def create_token(username: str) -> str:
 security = HTTPBearer(auto_error=False)
 
 
-def current_user(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)]) -> str:
+def current_user(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)]) -> AuthenticatedUser:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Tu sesión ha expirado. Inicia sesión nuevamente.")
     try:
@@ -625,9 +807,49 @@ def current_user(credentials: Annotated[HTTPAuthorizationCredentials | None, Dep
         data = json.loads(b64url_decode(payload))
         if int(data["exp"]) < int(time.time()):
             raise ValueError("Token vencido")
-        return str(data["sub"])
+        with connection() as db:
+            user = db.execute(
+                "SELECT id, username, name, role, token_version FROM users WHERE id = ? AND active = 1",
+                (int(data["uid"]),),
+            ).fetchone()
+        if user is None or int(user["token_version"]) != int(data["ver"]):
+            raise ValueError("Sesión revocada")
+        return AuthenticatedUser(**dict(user))
     except (ValueError, KeyError, json.JSONDecodeError):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Tu sesión no es válida.") from None
+
+
+def require_role(user: AuthenticatedUser, *allowed: UserRole) -> None:
+    if user.role not in allowed:
+        raise HTTPException(status_code=403, detail="Tu perfil no tiene permiso para realizar esta acción.")
+
+
+def audit(
+    user: AuthenticatedUser,
+    action: str,
+    entity: str = "",
+    entity_id: str | int = "",
+    detail: str = "",
+) -> None:
+    with connection() as db:
+        db.execute(
+            """
+            INSERT INTO activity_log (user_id, user_name, action, entity, entity_id, detail, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (user.id, user.name, action, entity, str(entity_id), detail[:500], utc_now()),
+        )
+
+
+def row_to_user(row: sqlite3.Row) -> UserRecord:
+    data = dict(row)
+    data["active"] = bool(data["active"])
+    return UserRecord(**data)
+
+
+def backup_info(path: Path) -> BackupInfo:
+    timestamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+    return BackupInfo(name=path.name, size=path.stat().st_size, created_at=timestamp)
 
 
 def row_to_news(row: sqlite3.Row) -> NewsItem:
@@ -1142,7 +1364,7 @@ def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = No
     query = {**(params or {}), "access_token": token}
     url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
     try:
-        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/0.9"})
+        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/1.0"})
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
         raise ValueError("No fue posible comunicarse con Meta.") from error
@@ -1160,7 +1382,7 @@ def facebook_graph_post(path: str, token: str, params: dict[str, str]) -> dict:
             url,
             data={**params, "access_token": token},
             timeout=25,
-            headers={"User-Agent": "PulsoMonitor/0.9"},
+            headers={"User-Agent": "PulsoMonitor/1.0"},
         )
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
@@ -1179,7 +1401,7 @@ def facebook_graph_delete(path: str, token: str) -> dict:
             url,
             data={"access_token": token},
             timeout=25,
-            headers={"User-Agent": "PulsoMonitor/0.9"},
+            headers={"User-Agent": "PulsoMonitor/1.0"},
         )
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
@@ -1239,7 +1461,7 @@ def facebook_status_data() -> FacebookStatus:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if not ADMIN_USER or not ADMIN_PASSWORD or len(SECRET_KEY) < 32:
+    if len(SECRET_KEY) < 32:
         raise RuntimeError("Configuración de acceso incompleta. Ejecuta instalar.bat nuevamente.")
     init_database()
     yield
@@ -1247,8 +1469,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="0.9.0",
-    description="API local para administrar cobertura, geolocalización automática, preparación y publicación de noticias.",
+    version="1.0.0",
+    description="API local para administrar noticias, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -1266,14 +1488,225 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.9.0"}
+    return {"status": "ok", "version": "1.0.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest) -> LoginResponse:
-    if not (secrets.compare_digest(payload.username, ADMIN_USER) and secrets.compare_digest(payload.password, ADMIN_PASSWORD)):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario o contraseña incorrectos.")
-    return LoginResponse(access_token=create_token(payload.username), user=UserInfo(name="Edgar", role="Administrador"))
+    with connection() as db:
+        user = db.execute("SELECT * FROM users WHERE username = ? COLLATE NOCASE", (payload.username.strip(),)).fetchone()
+        if user is None or not bool(user["active"]) or not verify_password(payload.password, str(user["password_hash"])):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario o contraseña incorrectos.")
+        now = utc_now()
+        db.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user["id"]))
+        user = db.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+        db.execute(
+            """
+            INSERT INTO activity_log (user_id, user_name, action, entity, entity_id, detail, created_at)
+            VALUES (?, ?, 'Inició sesión', 'sesión', ?, '', ?)
+            """,
+            (user["id"], user["name"], str(user["id"]), now),
+        )
+    return LoginResponse(
+        access_token=create_token(user),
+        user=UserInfo(id=user["id"], username=user["username"], name=user["name"], role=user["role"]),
+    )
+
+
+@app.get("/api/auth/me", response_model=UserInfo)
+def auth_me(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> UserInfo:
+    return UserInfo(id=user.id, username=user.username, name=user.name, role=user.role)
+
+
+@app.get("/api/usuarios", response_model=list[UserRecord])
+def list_users(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> list[UserRecord]:
+    require_role(user, "Administrador")
+    with connection() as db:
+        rows = db.execute(
+            """
+            SELECT id, username, name, role, active, last_login, created_at, updated_at
+            FROM users ORDER BY active DESC, name COLLATE NOCASE
+            """
+        ).fetchall()
+    return [row_to_user(row) for row in rows]
+
+
+@app.post("/api/usuarios", response_model=UserRecord, status_code=status.HTTP_201_CREATED)
+def create_user(
+    payload: UserCreateRequest,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> UserRecord:
+    require_role(user, "Administrador")
+    now = utc_now()
+    try:
+        with connection() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO users (
+                    username, name, role, password_hash, active, token_version, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    payload.username, payload.name, payload.role, hash_password(payload.password),
+                    int(payload.active), now, now,
+                ),
+            )
+            created = db.execute(
+                """
+                SELECT id, username, name, role, active, last_login, created_at, updated_at
+                FROM users WHERE id = ?
+                """,
+                (cursor.lastrowid,),
+            ).fetchone()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Ese nombre de usuario ya está registrado.") from None
+    audit(user, "Creó usuario", "usuario", created["id"], f"{created['name']} · {created['role']}")
+    return row_to_user(created)
+
+
+@app.put("/api/usuarios/{user_id}", response_model=UserRecord)
+def update_user(
+    user_id: int,
+    payload: UserUpdateRequest,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> UserRecord:
+    require_role(user, "Administrador")
+    with connection() as db:
+        existing = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="El usuario no existe.")
+        if user_id == user.id and (not payload.active or payload.role != "Administrador"):
+            raise HTTPException(status_code=409, detail="No puedes desactivar ni cambiar el rol de tu propia cuenta.")
+        if existing["role"] == "Administrador" and bool(existing["active"]) and (
+            not payload.active or payload.role != "Administrador"
+        ):
+            active_admins = int(db.execute(
+                "SELECT COUNT(*) FROM users WHERE role = 'Administrador' AND active = 1"
+            ).fetchone()[0])
+            if active_admins <= 1:
+                raise HTTPException(status_code=409, detail="Debe existir al menos un administrador activo.")
+        now = utc_now()
+        revoke_sessions = int(existing["role"] != payload.role or bool(existing["active"]) != payload.active)
+        db.execute(
+            """
+            UPDATE users SET name = ?, role = ?, active = ?, token_version = token_version + ?,
+                updated_at = ? WHERE id = ?
+            """,
+            (payload.name, payload.role, int(payload.active), revoke_sessions, now, user_id),
+        )
+        updated = db.execute(
+            """
+            SELECT id, username, name, role, active, last_login, created_at, updated_at
+            FROM users WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    audit(user, "Actualizó usuario", "usuario", user_id, f"{updated['name']} · {updated['role']}")
+    return row_to_user(updated)
+
+
+@app.put("/api/usuarios/{user_id}/contrasena", status_code=status.HTTP_204_NO_CONTENT)
+def update_user_password(
+    user_id: int,
+    payload: UserPasswordRequest,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> Response:
+    require_role(user, "Administrador")
+    with connection() as db:
+        existing = db.execute("SELECT id, name FROM users WHERE id = ?", (user_id,)).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="El usuario no existe.")
+        db.execute(
+            """
+            UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = ? WHERE id = ?
+            """,
+            (hash_password(payload.password), utc_now(), user_id),
+        )
+    audit(user, "Cambió contraseña", "usuario", user_id, str(existing["name"]))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/api/configuracion", response_model=AppSettings)
+def get_settings(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> AppSettings:
+    require_role(user, "Administrador")
+    with connection() as db:
+        row = db.execute("SELECT * FROM app_settings WHERE id = 1").fetchone()
+    return AppSettings(**dict(row))
+
+
+@app.put("/api/configuracion", response_model=AppSettings)
+def update_settings(
+    payload: AppSettings,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> AppSettings:
+    require_role(user, "Administrador")
+    now = utc_now()
+    with connection() as db:
+        db.execute(
+            """
+            UPDATE app_settings SET media_name = ?, tagline = ?, default_municipality = ?,
+                contact_email = ?, updated_at = ? WHERE id = 1
+            """,
+            (payload.media_name, payload.tagline, payload.default_municipality, payload.contact_email, now),
+        )
+        row = db.execute("SELECT * FROM app_settings WHERE id = 1").fetchone()
+    audit(user, "Actualizó configuración", "configuración", 1, payload.media_name)
+    return AppSettings(**dict(row))
+
+
+@app.get("/api/configuracion/actividad", response_model=list[ActivityItem])
+def list_activity(
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+    limit: int = Query(default=30, ge=1, le=100),
+) -> list[ActivityItem]:
+    require_role(user, "Administrador")
+    with connection() as db:
+        rows = db.execute(
+            """
+            SELECT id, user_name, action, entity, entity_id, detail, created_at
+            FROM activity_log ORDER BY id DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [ActivityItem(**dict(row)) for row in rows]
+
+
+@app.get("/api/configuracion/respaldos", response_model=list[BackupInfo])
+def list_backups(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> list[BackupInfo]:
+    require_role(user, "Administrador")
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    paths = sorted(BACKUP_DIR.glob("pulso-monitor-*.db"), key=lambda item: item.stat().st_mtime, reverse=True)
+    return [backup_info(path) for path in paths]
+
+
+@app.post("/api/configuracion/respaldos", response_model=BackupInfo, status_code=status.HTTP_201_CREATED)
+def create_backup(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> BackupInfo:
+    require_role(user, "Administrador")
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"pulso-monitor-{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
+    destination = BACKUP_DIR / filename
+    with connection() as source, sqlite3.connect(destination) as target:
+        source.backup(target)
+    paths = sorted(BACKUP_DIR.glob("pulso-monitor-*.db"), key=lambda item: item.stat().st_mtime, reverse=True)
+    for stale in paths[10:]:
+        stale.unlink(missing_ok=True)
+    audit(user, "Creó respaldo", "respaldo", filename, f"{destination.stat().st_size} bytes")
+    return backup_info(destination)
+
+
+@app.get("/api/configuracion/respaldos/{filename}")
+def download_backup(
+    filename: str,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> FileResponse:
+    require_role(user, "Administrador")
+    if not re.fullmatch(r"pulso-monitor-\d{8}-\d{6}\.db", filename):
+        raise HTTPException(status_code=404, detail="El respaldo no existe.")
+    path = BACKUP_DIR / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="El respaldo no existe.")
+    audit(user, "Descargó respaldo", "respaldo", filename)
+    return FileResponse(path, filename=filename, media_type="application/octet-stream")
 
 
 @app.get("/api/ia/estado", response_model=AIStatus)
@@ -1287,7 +1720,8 @@ def ai_status(_: Annotated[str, Depends(current_user)]) -> AIStatus:
 
 
 @app.post("/api/ia/configurar", response_model=AIStatus)
-def configure_ai(payload: AIConfigRequest, _: Annotated[str, Depends(current_user)]) -> AIStatus:
+def configure_ai(payload: AIConfigRequest, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> AIStatus:
+    require_role(user, "Administrador")
     try:
         from openai import OpenAI
 
@@ -1302,6 +1736,7 @@ def configure_ai(payload: AIConfigRequest, _: Annotated[str, Depends(current_use
     set_key(str(ENV_PATH), "OPENAI_MODEL", payload.model.strip(), quote_mode="always")
     os.environ["OPENAI_API_KEY"] = payload.api_key.strip()
     os.environ["OPENAI_MODEL"] = payload.model.strip()
+    audit(user, "Configuró IA", "configuración", "ia", payload.model.strip())
     return AIStatus(connected=True, provider="openai", model=payload.model.strip())
 
 
@@ -1326,7 +1761,8 @@ def list_municipalities(_: Annotated[str, Depends(current_user)]) -> list[Munici
 
 
 @app.post("/api/municipios", response_model=Municipality, status_code=status.HTTP_201_CREATED)
-def create_municipality(payload: MunicipalityPayload, _: Annotated[str, Depends(current_user)]) -> Municipality:
+def create_municipality(payload: MunicipalityPayload, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> Municipality:
+    require_role(user, "Administrador", "Editor")
     now = utc_now()
     try:
         with connection() as db:
@@ -1349,6 +1785,7 @@ def create_municipality(payload: MunicipalityPayload, _: Annotated[str, Depends(
         raise HTTPException(status_code=409, detail="Ese municipio o zona ya está registrado.") from None
     if result is None:
         raise HTTPException(status_code=500, detail="No fue posible recuperar el municipio guardado.")
+    audit(user, "Creó municipio", "municipio", result.id, result.name)
     return result
 
 
@@ -1356,8 +1793,9 @@ def create_municipality(payload: MunicipalityPayload, _: Annotated[str, Depends(
 def update_municipality(
     municipality_id: int,
     payload: MunicipalityPayload,
-    _: Annotated[str, Depends(current_user)],
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
 ) -> Municipality:
+    require_role(user, "Administrador", "Editor")
     now = utc_now()
     try:
         with connection() as db:
@@ -1393,11 +1831,13 @@ def update_municipality(
         raise HTTPException(status_code=409, detail="Ese municipio o zona ya está registrado.") from None
     if result is None:
         raise HTTPException(status_code=404, detail="Municipio no encontrado.")
+    audit(user, "Actualizó municipio", "municipio", result.id, result.name)
     return result
 
 
 @app.delete("/api/municipios/{municipality_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_municipality(municipality_id: int, _: Annotated[str, Depends(current_user)]) -> Response:
+def delete_municipality(municipality_id: int, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> Response:
+    require_role(user, "Administrador", "Editor")
     with connection() as db:
         row = db.execute("SELECT * FROM municipalities WHERE id = ?", (municipality_id,)).fetchone()
         if row is None:
@@ -1416,6 +1856,7 @@ def delete_municipality(municipality_id: int, _: Annotated[str, Depends(current_
                 detail="Este municipio ya tiene noticias o fuentes. Puedes desactivarlo para conservar su historial.",
             )
         db.execute("DELETE FROM municipalities WHERE id = ?", (municipality_id,))
+    audit(user, "Eliminó municipio", "municipio", municipality_id, str(row["name"]))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -1460,7 +1901,8 @@ def list_radar_sources(_: Annotated[str, Depends(current_user)]) -> list[RadarSo
 
 
 @app.post("/api/radar/fuentes", response_model=RadarSource, status_code=status.HTTP_201_CREATED)
-def create_radar_source(payload: RadarSourcePayload, _: Annotated[str, Depends(current_user)]) -> RadarSource:
+def create_radar_source(payload: RadarSourcePayload, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> RadarSource:
+    require_role(user, "Administrador", "Editor")
     now = utc_now()
     try:
         with connection() as db:
@@ -1474,11 +1916,13 @@ def create_radar_source(payload: RadarSourcePayload, _: Annotated[str, Depends(c
             row = db.execute("SELECT * FROM radar_sources WHERE id = ?", (cursor.lastrowid,)).fetchone()
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="Esta fuente ya está registrada en el Radar.") from None
+    audit(user, "Creó fuente Radar", "fuente", row["id"], str(row["name"]))
     return row_to_radar_source(row)
 
 
 @app.put("/api/radar/fuentes/{source_id}", response_model=RadarSource)
-def update_radar_source(source_id: int, payload: RadarSourcePayload, _: Annotated[str, Depends(current_user)]) -> RadarSource:
+def update_radar_source(source_id: int, payload: RadarSourcePayload, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> RadarSource:
+    require_role(user, "Administrador", "Editor")
     now = utc_now()
     try:
         with connection() as db:
@@ -1494,16 +1938,19 @@ def update_radar_source(source_id: int, payload: RadarSourcePayload, _: Annotate
             row = db.execute("SELECT * FROM radar_sources WHERE id = ?", (source_id,)).fetchone()
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="Esta fuente ya está registrada en el Radar.") from None
+    audit(user, "Actualizó fuente Radar", "fuente", source_id, str(row["name"]))
     return row_to_radar_source(row)
 
 
 @app.delete("/api/radar/fuentes/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_radar_source(source_id: int, _: Annotated[str, Depends(current_user)]) -> Response:
+def delete_radar_source(source_id: int, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> Response:
+    require_role(user, "Administrador", "Editor")
     with connection() as db:
         db.execute("DELETE FROM radar_items WHERE source_id = ?", (source_id,))
         cursor = db.execute("DELETE FROM radar_sources WHERE id = ?", (source_id,))
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="La fuente no existe.")
+    audit(user, "Eliminó fuente Radar", "fuente", source_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -1599,7 +2046,8 @@ def facebook_status(_: Annotated[str, Depends(current_user)]) -> FacebookStatus:
 
 
 @app.post("/api/facebook/conectar", response_model=FacebookStatus)
-def connect_facebook(payload: FacebookConnectRequest, _: Annotated[str, Depends(current_user)]) -> FacebookStatus:
+def connect_facebook(payload: FacebookConnectRequest, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> FacebookStatus:
+    require_role(user, "Administrador")
     page_id = payload.page_id.strip()
     token = payload.page_access_token.strip()
     try:
@@ -1627,11 +2075,13 @@ def connect_facebook(payload: FacebookConnectRequest, _: Annotated[str, Depends(
             """,
             (page_id, page_name, now, now),
         )
+    audit(user, "Conectó Facebook", "facebook", page_id, page_name)
     return facebook_status_data()
 
 
 @app.delete("/api/facebook/conexion", status_code=status.HTTP_204_NO_CONTENT)
-def disconnect_facebook(_: Annotated[str, Depends(current_user)]) -> Response:
+def disconnect_facebook(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> Response:
+    require_role(user, "Administrador")
     for key in ("FACEBOOK_PAGE_ACCESS_TOKEN", "FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_NAME"):
         unset_key(str(ENV_PATH), key)
         os.environ.pop(key, None)
@@ -1640,6 +2090,7 @@ def disconnect_facebook(_: Annotated[str, Depends(current_user)]) -> Response:
             "UPDATE facebook_state SET page_id = '', page_name = '', last_error = '', updated_at = ? WHERE id = 1",
             (utc_now(),),
         )
+    audit(user, "Desconectó Facebook", "facebook")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -2030,7 +2481,9 @@ def geolocate_pending_news(
 
 
 @app.post("/api/noticias", response_model=NewsItem, status_code=status.HTTP_201_CREATED)
-def create_news(payload: NewsPayload, _: Annotated[str, Depends(current_user)]) -> NewsItem:
+def create_news(payload: NewsPayload, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> NewsItem:
+    if user.role == "Reportero" and payload.status not in ("Pendiente", "En revisión"):
+        raise HTTPException(status_code=403, detail="Un reportero solo puede guardar noticias pendientes o en revisión.")
     now = utc_now()
     with connection() as db:
         cursor = db.execute(
@@ -2056,11 +2509,14 @@ def create_news(payload: NewsPayload, _: Annotated[str, Depends(current_user)]) 
         maybe_auto_geolocate_news(news_id)
     with connection() as db:
         row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    audit(user, "Creó noticia", "noticia", news_id, str(row["title"]))
     return row_to_news(row)
 
 
 @app.put("/api/noticias/{news_id}", response_model=NewsItem)
-def update_news(news_id: int, payload: NewsPayload, _: Annotated[str, Depends(current_user)]) -> NewsItem:
+def update_news(news_id: int, payload: NewsPayload, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> NewsItem:
+    if user.role == "Reportero" and payload.status not in ("Pendiente", "En revisión"):
+        raise HTTPException(status_code=403, detail="Un reportero solo puede guardar noticias pendientes o en revisión.")
     now = utc_now()
     with connection() as db:
         exists = db.execute("SELECT id, status, facebook_post_id FROM noticias WHERE id = ?", (news_id,)).fetchone()
@@ -2090,6 +2546,7 @@ def update_news(news_id: int, payload: NewsPayload, _: Annotated[str, Depends(cu
         maybe_auto_geolocate_news(news_id)
     with connection() as db:
         row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    audit(user, "Actualizó noticia", "noticia", news_id, str(row["title"]))
     return row_to_news(row)
 
 
@@ -2097,8 +2554,9 @@ def update_news(news_id: int, payload: NewsPayload, _: Annotated[str, Depends(cu
 def publish_news_to_facebook(
     news_id: int,
     payload: FacebookPublishRequest,
-    _: Annotated[str, Depends(current_user)],
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
 ) -> FacebookPublishResult:
+    require_role(user, "Administrador", "Editor")
     page_id = os.getenv("FACEBOOK_PAGE_ID", "").strip()
     token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "").strip()
     if not page_id or not token:
@@ -2162,6 +2620,13 @@ def publish_news_to_facebook(
             (target_status, facebook_post_id, scheduled_at, published_at, now, news_id),
         )
         updated = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    audit(
+        user,
+        "Programó en Facebook" if scheduled_at is not None else "Publicó en Facebook",
+        "noticia",
+        news_id,
+        str(updated["title"]),
+    )
     return FacebookPublishResult(
         news=row_to_news(updated),
         facebook_post_id=facebook_post_id,
@@ -2170,7 +2635,11 @@ def publish_news_to_facebook(
 
 
 @app.delete("/api/noticias/{news_id}/programacion-facebook", response_model=NewsItem)
-def cancel_facebook_schedule(news_id: int, _: Annotated[str, Depends(current_user)]) -> NewsItem:
+def cancel_facebook_schedule(
+    news_id: int,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> NewsItem:
+    require_role(user, "Administrador", "Editor")
     token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "").strip()
     if not token:
         raise HTTPException(status_code=400, detail="La página de Facebook no está conectada.")
@@ -2199,11 +2668,13 @@ def cancel_facebook_schedule(news_id: int, _: Annotated[str, Depends(current_use
             (now, news_id),
         )
         updated = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    audit(user, "Canceló programación", "noticia", news_id, str(updated["title"]))
     return row_to_news(updated)
 
 
 @app.delete("/api/noticias/{news_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_news(news_id: int, _: Annotated[str, Depends(current_user)]) -> Response:
+def delete_news(news_id: int, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> Response:
+    require_role(user, "Administrador", "Editor")
     with connection() as db:
         existing = db.execute("SELECT status, facebook_post_id FROM noticias WHERE id = ?", (news_id,)).fetchone()
         if existing is not None and existing["status"] == "Programada" and existing["facebook_post_id"]:
@@ -2219,6 +2690,7 @@ def delete_news(news_id: int, _: Annotated[str, Depends(current_user)]) -> Respo
         cursor = db.execute("DELETE FROM noticias WHERE id = ?", (news_id,))
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="La noticia no existe.")
+    audit(user, "Eliminó noticia", "noticia", news_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
