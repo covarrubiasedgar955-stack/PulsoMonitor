@@ -43,7 +43,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.0.0")
+        self.assertEqual(health.json()["version"], "1.1.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -92,6 +92,61 @@ class PulsoMonitorApiTests(unittest.TestCase):
             self.assertIn("users", tables)
             self.assertIn("app_settings", tables)
             self.assertIn("activity_log", tables)
+            self.assertIn("automation_jobs", tables)
+            self.assertIn("system_notifications", tables)
+
+    def test_automations_permissions_execution_and_alerts(self):
+        jobs = self.client.get("/api/automatizaciones", headers=self.headers)
+        self.assertEqual(jobs.status_code, 200)
+        self.assertEqual({item["key"] for item in jobs.json()}, {"facebook", "radar", "geolocation", "backup"})
+
+        created = self.client.post(
+            "/api/usuarios",
+            headers=self.headers,
+            json={
+                "username": "editor-auto",
+                "name": "Editor de automatización",
+                "role": "Editor",
+                "password": "ClaveEditorAuto-2026",
+                "active": True,
+            },
+        )
+        self.assertEqual(created.status_code, 201)
+        signed_in = self.client.post(
+            "/api/auth/login", json={"username": "editor-auto", "password": "ClaveEditorAuto-2026"}
+        )
+        editor_headers = {"Authorization": f"Bearer {signed_in.json()['access_token']}"}
+        self.assertEqual(self.client.get("/api/automatizaciones", headers=editor_headers).status_code, 403)
+
+        enabled = self.client.put(
+            "/api/automatizaciones/backup",
+            headers=self.headers,
+            json={"enabled": True, "interval_minutes": 60},
+        )
+        self.assertEqual(enabled.status_code, 200)
+        self.assertTrue(enabled.json()["enabled"])
+        self.assertIsNotNone(enabled.json()["next_run"])
+
+        executed = self.client.post("/api/automatizaciones/backup/ejecutar", headers=self.headers)
+        self.assertEqual(executed.status_code, 200)
+        self.assertEqual(executed.json()["last_status"], "success")
+        self.assertIn("Respaldo creado", executed.json()["last_message"])
+
+        facebook = self.client.post("/api/automatizaciones/facebook/ejecutar", headers=self.headers)
+        self.assertEqual(facebook.status_code, 200)
+        self.assertEqual(facebook.json()["last_status"], "error")
+        notifications = self.client.get("/api/notificaciones?unread_only=true", headers=self.headers)
+        self.assertGreaterEqual(len(notifications.json()), 2)
+        self.assertTrue(any(item["job_key"] == "backup" for item in notifications.json()))
+        self.assertTrue(any(item["job_key"] == "facebook" and item["level"] == "error" for item in notifications.json()))
+        self.assertEqual(self.client.post("/api/notificaciones/leer", headers=self.headers).status_code, 204)
+        unread = self.client.get("/api/notificaciones?unread_only=true", headers=self.headers)
+        self.assertEqual(unread.json(), [])
+        self.client.put(
+            "/api/automatizaciones/backup",
+            headers=self.headers,
+            json={"enabled": False, "interval_minutes": 60},
+        )
 
     def test_configuration_activity_and_backup(self):
         configuration = self.client.get("/api/configuracion", headers=self.headers)

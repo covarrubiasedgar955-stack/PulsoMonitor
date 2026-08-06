@@ -44,10 +44,13 @@ TOKEN_TTL_SECONDS = 12 * 60 * 60
 GEOCODER_URL = os.getenv("PULSO_GEOCODER_URL", "https://nominatim.openstreetmap.org/search").strip()
 GEOCODER_USER_AGENT = os.getenv(
     "PULSO_GEOCODER_USER_AGENT",
-    "PulsoMonitor/1.0 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
+    "PulsoMonitor/1.1 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
 ).strip()
 GEOCODER_LOCK = threading.Lock()
 GEOCODER_LAST_REQUEST = 0.0
+AUTOMATION_STOP = threading.Event()
+AUTOMATION_LOCK = threading.Lock()
+AUTOMATION_THREAD: threading.Thread | None = None
 
 NewsStatus = Literal["Pendiente", "En revisión", "Programada", "Publicada", "Archivada"]
 NewsPriority = Literal["Baja", "Media", "Alta", "Urgente"]
@@ -213,6 +216,58 @@ def init_database() -> None:
             """
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at DESC)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS automation_jobs (
+                key TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                description TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                interval_minutes INTEGER NOT NULL,
+                last_run TEXT,
+                next_run TEXT,
+                last_status TEXT NOT NULL DEFAULT 'idle',
+                last_message TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        automation_defaults = (
+            ("facebook", "Facebook", "Busca publicaciones nuevas en la página conectada.", 30),
+            ("radar", "Radar", "Consulta todas las fuentes RSS o Atom activas.", 30),
+            ("geolocation", "Geolocalización", "Intenta ubicar noticias pendientes de forma supervisada.", 15),
+            ("backup", "Respaldos", "Crea una copia local de la base de datos.", 1440),
+        )
+        db.executemany(
+            """
+            INSERT OR IGNORE INTO automation_jobs (
+                key, label, description, enabled, interval_minutes, last_status, updated_at
+            ) VALUES (?, ?, ?, 0, ?, 'idle', ?)
+            """,
+            [(key, label, description, interval, utc_now()) for key, label, description, interval in automation_defaults],
+        )
+        db.execute(
+            """
+            UPDATE automation_jobs SET last_status = 'error',
+                last_message = 'La ejecución anterior fue interrumpida al cerrar Pulso Monitor.',
+                updated_at = ? WHERE last_status = 'running'
+            """,
+            (utc_now(),),
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS system_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                level TEXT NOT NULL DEFAULT 'info',
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                job_key TEXT NOT NULL DEFAULT '',
+                is_read INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_created ON system_notifications(created_at DESC)")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS radar_sources (
@@ -465,6 +520,37 @@ class ActivityItem(BaseModel):
 class BackupInfo(BaseModel):
     name: str
     size: int
+    created_at: str
+
+
+AutomationKey = Literal["facebook", "radar", "geolocation", "backup"]
+
+
+class AutomationJob(BaseModel):
+    key: AutomationKey
+    label: str
+    description: str
+    enabled: bool
+    interval_minutes: int
+    last_run: str | None = None
+    next_run: str | None = None
+    last_status: Literal["idle", "running", "success", "error"]
+    last_message: str
+    updated_at: str
+
+
+class AutomationUpdate(BaseModel):
+    enabled: bool
+    interval_minutes: int = Field(ge=5, le=10_080)
+
+
+class SystemNotification(BaseModel):
+    id: int
+    level: Literal["success", "error", "info"]
+    title: str
+    message: str
+    job_key: str
+    is_read: bool
     created_at: str
 
 
@@ -850,6 +936,44 @@ def row_to_user(row: sqlite3.Row) -> UserRecord:
 def backup_info(path: Path) -> BackupInfo:
     timestamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
     return BackupInfo(name=path.name, size=path.stat().st_size, created_at=timestamp)
+
+
+def create_database_backup() -> BackupInfo:
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"pulso-monitor-{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
+    destination = BACKUP_DIR / filename
+    with connection() as source, sqlite3.connect(destination) as target:
+        source.backup(target)
+    paths = sorted(BACKUP_DIR.glob("pulso-monitor-*.db"), key=lambda item: item.stat().st_mtime, reverse=True)
+    for stale in paths[10:]:
+        stale.unlink(missing_ok=True)
+    return backup_info(destination)
+
+
+def row_to_automation(row: sqlite3.Row) -> AutomationJob:
+    data = dict(row)
+    data["enabled"] = bool(data["enabled"])
+    return AutomationJob(**data)
+
+
+def row_to_notification(row: sqlite3.Row) -> SystemNotification:
+    data = dict(row)
+    data["is_read"] = bool(data["is_read"])
+    return SystemNotification(**data)
+
+
+def create_notification(level: Literal["success", "error", "info"], title: str, message: str, job_key: str = "") -> None:
+    with connection() as db:
+        db.execute(
+            """
+            INSERT INTO system_notifications (level, title, message, job_key, is_read, created_at)
+            VALUES (?, ?, ?, ?, 0, ?)
+            """,
+            (level, title[:120], message[:700], job_key, utc_now()),
+        )
+        db.execute(
+            "DELETE FROM system_notifications WHERE id NOT IN (SELECT id FROM system_notifications ORDER BY id DESC LIMIT 500)"
+        )
 
 
 def row_to_news(row: sqlite3.Row) -> NewsItem:
@@ -1364,7 +1488,7 @@ def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = No
     query = {**(params or {}), "access_token": token}
     url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
     try:
-        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/1.0"})
+        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/1.1"})
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
         raise ValueError("No fue posible comunicarse con Meta.") from error
@@ -1382,7 +1506,7 @@ def facebook_graph_post(path: str, token: str, params: dict[str, str]) -> dict:
             url,
             data={**params, "access_token": token},
             timeout=25,
-            headers={"User-Agent": "PulsoMonitor/1.0"},
+            headers={"User-Agent": "PulsoMonitor/1.1"},
         )
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
@@ -1401,7 +1525,7 @@ def facebook_graph_delete(path: str, token: str) -> dict:
             url,
             data={"access_token": token},
             timeout=25,
-            headers={"User-Agent": "PulsoMonitor/1.0"},
+            headers={"User-Agent": "PulsoMonitor/1.1"},
         )
         data = response.json()
     except (httpx.HTTPError, ValueError) as error:
@@ -1459,18 +1583,128 @@ def facebook_status_data() -> FacebookStatus:
     )
 
 
+def geolocate_automation_batch(limit: int = 20) -> str:
+    with connection() as db:
+        rows = db.execute(
+            """
+            SELECT id FROM noticias
+            WHERE status != 'Archivada' AND (latitude IS NULL OR longitude IS NULL)
+              AND location_source NOT IN ('not_found', 'protected')
+            ORDER BY CASE priority WHEN 'Urgente' THEN 0 WHEN 'Alta' THEN 1 ELSE 2 END,
+                     created_at DESC, id DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    counts = {"located": 0, "not_found": 0, "protected": 0, "error": 0}
+    for row in rows:
+        result = auto_geolocate_news(int(row["id"]))
+        counts[result if result in counts else "error"] += 1
+    return (
+        f"{len(rows)} analizadas · {counts['located']} ubicadas · "
+        f"{counts['not_found']} sin coincidencia · {counts['protected']} protegidas"
+    )
+
+
+def run_automation_job(key: AutomationKey, scheduled: bool = False) -> AutomationJob:
+    with AUTOMATION_LOCK:
+        with connection() as db:
+            job = db.execute("SELECT * FROM automation_jobs WHERE key = ?", (key,)).fetchone()
+            if job is None:
+                raise ValueError("La automatización no existe.")
+            if scheduled and not bool(job["enabled"]):
+                return row_to_automation(job)
+            started_at = utc_now()
+            next_run = (datetime.now(timezone.utc) + timedelta(minutes=int(job["interval_minutes"]))).isoformat(timespec="seconds")
+            db.execute(
+                """
+                UPDATE automation_jobs SET last_run = ?, next_run = ?, last_status = 'running',
+                    last_message = '', updated_at = ? WHERE key = ?
+                """,
+                (started_at, next_run if bool(job["enabled"]) else None, started_at, key),
+            )
+
+        try:
+            if key == "facebook":
+                result = sync_facebook_posts()
+                message = f"{result.detected} publicaciones nuevas de {result.total_received} recibidas."
+                should_notify = result.detected > 0
+            elif key == "radar":
+                result = scan_radar_sources()
+                message = f"{result.scanned_sources} fuentes revisadas · {result.detected} hallazgos nuevos."
+                if result.errors:
+                    message += f" {len(result.errors)} fuentes con error."
+                should_notify = result.detected > 0 or bool(result.errors)
+            elif key == "geolocation":
+                message = geolocate_automation_batch()
+                should_notify = not message.startswith("0 analizadas")
+            else:
+                created = create_database_backup()
+                message = f"Respaldo creado: {created.name} ({created.size} bytes)."
+                should_notify = True
+            final_status: Literal["success", "error"] = "success"
+        except Exception as error:
+            detail = error.detail if isinstance(error, HTTPException) else str(error)
+            message = clean_feed_text(str(detail), 700) or "La tarea no pudo completarse."
+            final_status = "error"
+            should_notify = True
+
+        finished_at = utc_now()
+        with connection() as db:
+            db.execute(
+                """
+                UPDATE automation_jobs SET last_status = ?, last_message = ?, updated_at = ? WHERE key = ?
+                """,
+                (final_status, message, finished_at, key),
+            )
+            updated = db.execute("SELECT * FROM automation_jobs WHERE key = ?", (key,)).fetchone()
+        if should_notify:
+            create_notification(final_status, f"{updated['label']}: {'completada' if final_status == 'success' else 'requiere atención'}", message, key)
+        return row_to_automation(updated)
+
+
+def automation_scheduler() -> None:
+    while not AUTOMATION_STOP.wait(10):
+        now = utc_now()
+        with connection() as db:
+            due = db.execute(
+                """
+                SELECT key FROM automation_jobs
+                WHERE enabled = 1 AND (next_run IS NULL OR next_run <= ?)
+                ORDER BY key
+                """,
+                (now,),
+            ).fetchall()
+        for row in due:
+            if AUTOMATION_STOP.is_set():
+                return
+            run_automation_job(row["key"], scheduled=True)
+
+
+def start_automation_scheduler() -> None:
+    global AUTOMATION_THREAD
+    AUTOMATION_STOP.clear()
+    AUTOMATION_THREAD = threading.Thread(target=automation_scheduler, name="pulso-automation", daemon=True)
+    AUTOMATION_THREAD.start()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if len(SECRET_KEY) < 32:
         raise RuntimeError("Configuración de acceso incompleta. Ejecuta instalar.bat nuevamente.")
     init_database()
-    yield
+    start_automation_scheduler()
+    try:
+        yield
+    finally:
+        AUTOMATION_STOP.set()
+        if AUTOMATION_THREAD is not None:
+            AUTOMATION_THREAD.join(timeout=3)
 
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.0.0",
-    description="API local para administrar noticias, usuarios, cobertura, seguridad y publicación.",
+    version="1.1.0",
+    description="API local para administrar noticias, automatizaciones, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -1488,7 +1722,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "version": "1.1.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -1682,16 +1916,9 @@ def list_backups(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> l
 @app.post("/api/configuracion/respaldos", response_model=BackupInfo, status_code=status.HTTP_201_CREATED)
 def create_backup(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> BackupInfo:
     require_role(user, "Administrador")
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    filename = f"pulso-monitor-{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
-    destination = BACKUP_DIR / filename
-    with connection() as source, sqlite3.connect(destination) as target:
-        source.backup(target)
-    paths = sorted(BACKUP_DIR.glob("pulso-monitor-*.db"), key=lambda item: item.stat().st_mtime, reverse=True)
-    for stale in paths[10:]:
-        stale.unlink(missing_ok=True)
-    audit(user, "Creó respaldo", "respaldo", filename, f"{destination.stat().st_size} bytes")
-    return backup_info(destination)
+    created = create_database_backup()
+    audit(user, "Creó respaldo", "respaldo", created.name, f"{created.size} bytes")
+    return created
 
 
 @app.get("/api/configuracion/respaldos/{filename}")
@@ -1707,6 +1934,88 @@ def download_backup(
         raise HTTPException(status_code=404, detail="El respaldo no existe.")
     audit(user, "Descargó respaldo", "respaldo", filename)
     return FileResponse(path, filename=filename, media_type="application/octet-stream")
+
+
+@app.get("/api/automatizaciones", response_model=list[AutomationJob])
+def list_automations(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> list[AutomationJob]:
+    require_role(user, "Administrador")
+    with connection() as db:
+        rows = db.execute(
+            """
+            SELECT * FROM automation_jobs
+            ORDER BY CASE key WHEN 'facebook' THEN 1 WHEN 'radar' THEN 2
+                     WHEN 'geolocation' THEN 3 ELSE 4 END
+            """
+        ).fetchall()
+    return [row_to_automation(row) for row in rows]
+
+
+@app.put("/api/automatizaciones/{key}", response_model=AutomationJob)
+def update_automation(
+    key: AutomationKey,
+    payload: AutomationUpdate,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> AutomationJob:
+    require_role(user, "Administrador")
+    now = utc_now()
+    next_run = (
+        (datetime.now(timezone.utc) + timedelta(minutes=payload.interval_minutes)).isoformat(timespec="seconds")
+        if payload.enabled else None
+    )
+    with connection() as db:
+        cursor = db.execute(
+            """
+            UPDATE automation_jobs SET enabled = ?, interval_minutes = ?, next_run = ?,
+                updated_at = ? WHERE key = ?
+            """,
+            (int(payload.enabled), payload.interval_minutes, next_run, now, key),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="La automatización no existe.")
+        row = db.execute("SELECT * FROM automation_jobs WHERE key = ?", (key,)).fetchone()
+    audit(
+        user,
+        "Activó automatización" if payload.enabled else "Desactivó automatización",
+        "automatización",
+        key,
+        f"Cada {payload.interval_minutes} minutos",
+    )
+    return row_to_automation(row)
+
+
+@app.post("/api/automatizaciones/{key}/ejecutar", response_model=AutomationJob)
+def execute_automation(
+    key: AutomationKey,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> AutomationJob:
+    require_role(user, "Administrador")
+    result = run_automation_job(key)
+    audit(user, "Ejecutó automatización", "automatización", key, result.last_message)
+    return result
+
+
+@app.get("/api/notificaciones", response_model=list[SystemNotification])
+def list_notifications(
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+    unread_only: bool = False,
+    limit: int = Query(default=50, ge=1, le=100),
+) -> list[SystemNotification]:
+    require_role(user, "Administrador")
+    where = "WHERE is_read = 0" if unread_only else ""
+    with connection() as db:
+        rows = db.execute(
+            f"SELECT * FROM system_notifications {where} ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [row_to_notification(row) for row in rows]
+
+
+@app.post("/api/notificaciones/leer", status_code=status.HTTP_204_NO_CONTENT)
+def mark_notifications_read(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> Response:
+    require_role(user, "Administrador")
+    with connection() as db:
+        db.execute("UPDATE system_notifications SET is_read = 1 WHERE is_read = 0")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/api/ia/estado", response_model=AIStatus)
@@ -1954,8 +2263,7 @@ def delete_radar_source(source_id: int, user: Annotated[AuthenticatedUser, Depen
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@app.post("/api/radar/escanear", response_model=RadarScanResult)
-def scan_radar(_: Annotated[str, Depends(current_user)], source_id: int | None = None) -> RadarScanResult:
+def scan_radar_sources(source_id: int | None = None) -> RadarScanResult:
     with connection() as db:
         if source_id is not None:
             rows = db.execute("SELECT * FROM radar_sources WHERE id = ?", (source_id,)).fetchall()
@@ -1978,6 +2286,11 @@ def scan_radar(_: Annotated[str, Depends(current_user)], source_id: int | None =
                     (now, message, now, source["id"]),
                 )
     return RadarScanResult(scanned_sources=len(rows), detected=detected, errors=errors)
+
+
+@app.post("/api/radar/escanear", response_model=RadarScanResult)
+def scan_radar(_: Annotated[str, Depends(current_user)], source_id: int | None = None) -> RadarScanResult:
+    return scan_radar_sources(source_id)
 
 
 @app.get("/api/radar/hallazgos", response_model=RadarItemList)
@@ -2094,8 +2407,7 @@ def disconnect_facebook(user: Annotated[AuthenticatedUser, Depends(current_user)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@app.post("/api/facebook/sincronizar", response_model=FacebookSyncResult)
-def sync_facebook(_: Annotated[str, Depends(current_user)]) -> FacebookSyncResult:
+def sync_facebook_posts() -> FacebookSyncResult:
     page_id = os.getenv("FACEBOOK_PAGE_ID", "").strip()
     token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "").strip()
     if not page_id or not token:
@@ -2145,6 +2457,13 @@ def sync_facebook(_: Annotated[str, Depends(current_user)]) -> FacebookSyncResul
             (now, now),
         )
     return FacebookSyncResult(detected=detected, total_received=len(posts))
+
+
+@app.post("/api/facebook/sincronizar", response_model=FacebookSyncResult)
+def sync_facebook(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> FacebookSyncResult:
+    result = sync_facebook_posts()
+    audit(user, "Sincronizó Facebook", "facebook", detail=f"{result.detected} publicaciones nuevas")
+    return result
 
 
 @app.get("/api/facebook/publicaciones", response_model=FacebookPostList)
