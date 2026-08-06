@@ -171,6 +171,31 @@ export interface BackupInfo {
   created_at: string;
 }
 
+export type AutomationKey = "facebook" | "radar" | "geolocation" | "backup";
+
+export interface AutomationJob {
+  key: AutomationKey;
+  label: string;
+  description: string;
+  enabled: boolean;
+  interval_minutes: number;
+  last_run: string | null;
+  next_run: string | null;
+  last_status: "idle" | "running" | "success" | "error";
+  last_message: string;
+  updated_at: string;
+}
+
+export interface SystemNotification {
+  id: number;
+  level: "success" | "error" | "info";
+  title: string;
+  message: string;
+  job_key: string;
+  is_read: boolean;
+  created_at: string;
+}
+
 export type AITone = "Informativo" | "Urgente" | "Institucional" | "Cercano";
 
 export interface AIAnalyzeInput {

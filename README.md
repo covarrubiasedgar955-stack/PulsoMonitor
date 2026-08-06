@@ -1,4 +1,4 @@
-# Pulso Monitor v1.0
+# Pulso Monitor v1.1
 
 Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye dashboard, gestión editorial, Asistente IA, Radar de fuentes y conexión autorizada con Facebook.
 
@@ -46,6 +46,9 @@ Centro local de administración, redacción y detección de noticias para **Puls
 - Panel de configuración con identidad del medio y municipio principal.
 - Registro de actividad administrativa y accesos recientes.
 - Respaldos verificables de SQLite, descarga local y conservación de las 10 copias más recientes.
+- Automatización configurable de Facebook, Radar, geolocalización y respaldos mientras el sistema está encendido.
+- Ejecución manual de cada tarea y programación desde un panel central.
+- Alertas relevantes para contenido nuevo, respaldos y errores que requieren atención.
 
 ## Instalación rápida en Windows
 
@@ -69,6 +72,12 @@ Las contraseñas no se almacenan como texto. Al cambiar una contraseña, desacti
 ## Configuración y respaldos
 
 El módulo **Configuración** permite editar la identidad del medio, consultar la actividad reciente y crear copias de seguridad. Los respaldos se guardan en `backend\backups`, pueden descargarse desde el panel y se limitan automáticamente a las 10 copias más recientes.
+
+## Automatizaciones
+
+El módulo **Automatizaciones** permite activar y programar cuatro tareas: sincronización de Facebook, escaneo de fuentes Radar, geolocalización supervisada y respaldos de SQLite. Cada tarea puede ejecutarse inmediatamente o repetirse entre cada 15 minutos y una vez por semana.
+
+Las tareas programadas funcionan mientras Pulso Monitor y su ventana de API estén encendidos. El historial muestra nuevos hallazgos, copias creadas y errores relevantes. Por seguridad editorial, la automatización nunca aprueba ni publica noticias en Facebook: toda publicación continúa requiriendo revisión humana.
 
 ## Asistente IA
 
@@ -163,6 +172,7 @@ app/facebook/        Conexión autorizada con una página de Facebook
 app/publicaciones/   Aprobación, programación y publicación en Facebook
 app/municipios/      Cobertura e indicadores por municipio
 app/mapa/            Mapa interactivo de incidencias
+app/automatizaciones/ Programación de tareas y alertas operativas
 app/usuarios/        Usuarios, roles y contraseñas
 app/configuracion/   Identidad, actividad y respaldos
 components/          Navegación e inicio de sesión
@@ -176,4 +186,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v1.0 administra noticias, equipo editorial, permisos, cobertura municipal, geolocalización automática supervisada, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Incorpora auditoría y respaldos sin perder los datos de versiones anteriores. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.
+La v1.1 administra noticias, equipo editorial, permisos, cobertura municipal, automatizaciones supervisadas, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Incorpora auditoría, alertas y respaldos sin perder los datos de versiones anteriores. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.

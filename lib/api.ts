@@ -4,6 +4,8 @@ import type {
   AIAnalyzeInput,
   AIStatus,
   AppSettings,
+  AutomationJob,
+  AutomationKey,
   BackupInfo,
   FacebookPostList,
   FacebookPrepareResult,
@@ -25,6 +27,7 @@ import type {
   RadarSource,
   RadarSourceInput,
   RadarStats,
+  SystemNotification,
   UserCreateInput,
   UserInfo,
   UserRecord,
@@ -140,6 +143,29 @@ export const api = {
 
   createBackup() {
     return request<BackupInfo>("/api/configuracion/respaldos", { method: "POST" });
+  },
+
+  listAutomations() {
+    return request<AutomationJob[]>("/api/automatizaciones");
+  },
+
+  updateAutomation(key: AutomationKey, enabled: boolean, intervalMinutes: number) {
+    return request<AutomationJob>(`/api/automatizaciones/${key}`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled, interval_minutes: intervalMinutes }),
+    });
+  },
+
+  executeAutomation(key: AutomationKey) {
+    return request<AutomationJob>(`/api/automatizaciones/${key}/ejecutar`, { method: "POST" });
+  },
+
+  listNotifications(unreadOnly = false) {
+    return request<SystemNotification[]>(`/api/notificaciones?unread_only=${unreadOnly}&limit=50`);
+  },
+
+  markNotificationsRead() {
+    return request<void>("/api/notificaciones/leer", { method: "POST" });
   },
 
   async downloadBackup(filename: string) {
