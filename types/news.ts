@@ -49,6 +49,42 @@ export interface NewsStats {
   total: number;
 }
 
+export interface AnalyticsPoint {
+  label: string;
+  value: number;
+}
+
+export interface AnalyticsTrendPoint {
+  date: string;
+  created: number;
+  published: number;
+}
+
+export interface AnalyticsSummary {
+  period_days: number;
+  created: number;
+  previous_created: number;
+  created_change: number;
+  published: number;
+  pending: number;
+  urgent: number;
+  ai_created: number;
+  mapped: number;
+  publication_rate: number;
+  ai_rate: number;
+  mapped_rate: number;
+}
+
+export interface AnalyticsReport {
+  generated_at: string;
+  summary: AnalyticsSummary;
+  trend: AnalyticsTrendPoint[];
+  statuses: AnalyticsPoint[];
+  categories: AnalyticsPoint[];
+  municipalities: AnalyticsPoint[];
+  sources: AnalyticsPoint[];
+}
+
 export interface NewsListResponse {
   items: NewsItem[];
   total: number;

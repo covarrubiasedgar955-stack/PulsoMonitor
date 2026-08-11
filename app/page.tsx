@@ -38,7 +38,10 @@ export default function DashboardPage() {
     <main>
       <div className="page-heading">
         <div><p className="eyebrow">RESUMEN GENERAL</p><h1>Dashboard</h1><p>Lo más importante de Pulso Tequila, en un vistazo.</p></div>
-        <Link href="/noticias" className="button primary">Administrar noticias</Link>
+        <div className="heading-actions">
+          <Link href="/estadisticas" className="button secondary">Ver estadísticas</Link>
+          <Link href="/noticias" className="button primary">Administrar noticias</Link>
+        </div>
       </div>
 
       {error && <div className="alert error"><strong>Backend sin conexión.</strong> {error} Inicia el archivo <code>iniciar.bat</code>.</div>}

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import calendar
+import csv
 import hashlib
 import hmac
+import io
 import ipaddress
 import json
 import os
@@ -44,7 +46,7 @@ TOKEN_TTL_SECONDS = 12 * 60 * 60
 GEOCODER_URL = os.getenv("PULSO_GEOCODER_URL", "https://nominatim.openstreetmap.org/search").strip()
 GEOCODER_USER_AGENT = os.getenv(
     "PULSO_GEOCODER_USER_AGENT",
-    "PulsoMonitor/1.1 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
+    "PulsoMonitor/1.2 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
 ).strip()
 GEOCODER_LOCK = threading.Lock()
 GEOCODER_LAST_REQUEST = 0.0
@@ -661,6 +663,42 @@ class NewsStats(BaseModel):
     published: int
     urgent: int
     total: int
+
+
+class AnalyticsPoint(BaseModel):
+    label: str
+    value: int
+
+
+class AnalyticsTrendPoint(BaseModel):
+    date: str
+    created: int
+    published: int
+
+
+class AnalyticsSummary(BaseModel):
+    period_days: int
+    created: int
+    previous_created: int
+    created_change: float
+    published: int
+    pending: int
+    urgent: int
+    ai_created: int
+    mapped: int
+    publication_rate: float
+    ai_rate: float
+    mapped_rate: float
+
+
+class AnalyticsReport(BaseModel):
+    generated_at: str
+    summary: AnalyticsSummary
+    trend: list[AnalyticsTrendPoint]
+    statuses: list[AnalyticsPoint]
+    categories: list[AnalyticsPoint]
+    municipalities: list[AnalyticsPoint]
+    sources: list[AnalyticsPoint]
 
 
 class MunicipalityPayload(BaseModel):
@@ -1703,8 +1741,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.1.0",
-    description="API local para administrar noticias, automatizaciones, usuarios, cobertura, seguridad y publicación.",
+    version="1.2.0",
+    description="API local para administrar noticias, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -1722,7 +1760,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.1.0"}
+    return {"status": "ok", "version": "1.2.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -2596,6 +2634,160 @@ def statistics(_: Annotated[str, Depends(current_user)]) -> NewsStats:
             (today,),
         ).fetchone()
     return NewsStats(**{key: int(row[key] or 0) for key in ("today", "pending", "published", "urgent", "total")})
+
+
+def percentage(numerator: int, denominator: int) -> float:
+    return round((numerator / denominator) * 100, 1) if denominator else 0.0
+
+
+def analytics_period(days: int) -> tuple[datetime, datetime, datetime]:
+    end = datetime.now(timezone.utc)
+    start = datetime.combine(end.date() - timedelta(days=days - 1), datetime.min.time(), timezone.utc)
+    previous_start = start - timedelta(days=days)
+    return start, end, previous_start
+
+
+def analytics_points(db: sqlite3.Connection, column: str, start: str, limit: int = 8) -> list[AnalyticsPoint]:
+    allowed = {"status", "category", "municipality", "source"}
+    if column not in allowed:
+        raise ValueError("Dimensión de estadísticas no permitida.")
+    rows = db.execute(
+        f"""
+        SELECT COALESCE(NULLIF(TRIM({column}), ''), 'Sin especificar') AS label, COUNT(*) AS value
+        FROM noticias WHERE created_at >= ?
+        GROUP BY label ORDER BY value DESC, label COLLATE NOCASE LIMIT ?
+        """,
+        (start, limit),
+    ).fetchall()
+    return [AnalyticsPoint(label=str(row["label"]), value=int(row["value"])) for row in rows]
+
+
+@app.get("/api/estadisticas", response_model=AnalyticsReport)
+def analytics(
+    _: Annotated[AuthenticatedUser, Depends(current_user)],
+    days: Annotated[int, Query(ge=7, le=90)] = 30,
+) -> AnalyticsReport:
+    start, end, previous_start = analytics_period(days)
+    start_iso = start.isoformat(timespec="seconds")
+    previous_iso = previous_start.isoformat(timespec="seconds")
+    end_iso = end.isoformat(timespec="seconds")
+    with connection() as db:
+        summary_row = db.execute(
+            """
+            SELECT
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS created,
+                SUM(CASE WHEN created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) AS previous_created,
+                SUM(CASE WHEN status = 'Publicada' AND COALESCE(published_at, updated_at, created_at) >= ? THEN 1 ELSE 0 END) AS published,
+                SUM(CASE WHEN status IN ('Pendiente', 'En revisión') THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN priority = 'Urgente' AND status != 'Archivada' THEN 1 ELSE 0 END) AS urgent,
+                SUM(CASE WHEN created_at >= ? AND is_ai = 1 THEN 1 ELSE 0 END) AS ai_created,
+                SUM(CASE WHEN created_at >= ? AND latitude IS NOT NULL AND longitude IS NOT NULL THEN 1 ELSE 0 END) AS mapped
+            FROM noticias
+            """,
+            (start_iso, previous_iso, start_iso, start_iso, start_iso, start_iso),
+        ).fetchone()
+        created = int(summary_row["created"] or 0)
+        previous_created = int(summary_row["previous_created"] or 0)
+        published = int(summary_row["published"] or 0)
+        ai_created = int(summary_row["ai_created"] or 0)
+        mapped = int(summary_row["mapped"] or 0)
+        created_change = (
+            round(((created - previous_created) / previous_created) * 100, 1)
+            if previous_created else (100.0 if created else 0.0)
+        )
+
+        created_by_day = {
+            str(row["day"]): int(row["value"])
+            for row in db.execute(
+                """
+                SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS value
+                FROM noticias WHERE created_at >= ? GROUP BY day
+                """,
+                (start_iso,),
+            ).fetchall()
+        }
+        published_by_day = {
+            str(row["day"]): int(row["value"])
+            for row in db.execute(
+                """
+                SELECT substr(COALESCE(published_at, updated_at, created_at), 1, 10) AS day, COUNT(*) AS value
+                FROM noticias
+                WHERE status = 'Publicada' AND COALESCE(published_at, updated_at, created_at) >= ?
+                GROUP BY day
+                """,
+                (start_iso,),
+            ).fetchall()
+        }
+        statuses = analytics_points(db, "status", start_iso, 10)
+        categories = analytics_points(db, "category", start_iso)
+        municipalities = analytics_points(db, "municipality", start_iso)
+        sources = analytics_points(db, "source", start_iso)
+
+    trend = []
+    for offset in range(days):
+        day = (start.date() + timedelta(days=offset)).isoformat()
+        trend.append(AnalyticsTrendPoint(
+            date=day,
+            created=created_by_day.get(day, 0),
+            published=published_by_day.get(day, 0),
+        ))
+    return AnalyticsReport(
+        generated_at=end_iso,
+        summary=AnalyticsSummary(
+            period_days=days,
+            created=created,
+            previous_created=previous_created,
+            created_change=created_change,
+            published=published,
+            pending=int(summary_row["pending"] or 0),
+            urgent=int(summary_row["urgent"] or 0),
+            ai_created=ai_created,
+            mapped=mapped,
+            publication_rate=percentage(published, created),
+            ai_rate=percentage(ai_created, created),
+            mapped_rate=percentage(mapped, created),
+        ),
+        trend=trend,
+        statuses=statuses,
+        categories=categories,
+        municipalities=municipalities,
+        sources=sources,
+    )
+
+
+@app.get("/api/estadisticas/exportar.csv")
+def export_analytics_csv(
+    _: Annotated[AuthenticatedUser, Depends(current_user)],
+    days: Annotated[int, Query(ge=7, le=90)] = 30,
+) -> Response:
+    start, _, _ = analytics_period(days)
+    with connection() as db:
+        rows = db.execute(
+            """
+            SELECT id, title, summary, source, author, municipality, category, priority,
+                   status, created_at, published_at, is_ai, location, latitude, longitude
+            FROM noticias WHERE created_at >= ? ORDER BY created_at DESC
+            """,
+            (start.isoformat(timespec="seconds"),),
+        ).fetchall()
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow([
+        "ID", "Título", "Resumen", "Fuente", "Autor", "Municipio", "Categoría", "Prioridad",
+        "Estado", "Creada", "Publicada", "Creada con IA", "Ubicación", "Latitud", "Longitud",
+    ])
+    for row in rows:
+        writer.writerow([
+            row["id"], row["title"], row["summary"], row["source"], row["author"], row["municipality"],
+            row["category"], row["priority"], row["status"], row["created_at"], row["published_at"] or "",
+            "Sí" if row["is_ai"] else "No", row["location"], row["latitude"] or "", row["longitude"] or "",
+        ])
+    filename = f"pulso-monitor-estadisticas-{datetime.now().strftime('%Y%m%d')}-{days}d.csv"
+    return Response(
+        content="\ufeff" + output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/noticias", response_model=NewsList)

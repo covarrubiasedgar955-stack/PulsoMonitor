@@ -3,6 +3,7 @@ import type {
   AIAnalysis,
   AIAnalyzeInput,
   AIStatus,
+  AnalyticsReport,
   AppSettings,
   AutomationJob,
   AutomationKey,
@@ -184,6 +185,26 @@ export const api = {
 
   stats() {
     return request<NewsStats>("/api/noticias/estadisticas");
+  },
+
+  analytics(days = 30) {
+    return request<AnalyticsReport>(`/api/estadisticas?days=${days}`);
+  },
+
+  async downloadAnalytics(days = 30) {
+    const authToken = token();
+    const response = await fetch(`${API_URL}/api/estadisticas/exportar.csv?days=${days}`, {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+    if (!response.ok) throw new ApiError("No se pudo exportar el reporte.", response.status);
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || `pulso-monitor-${days}d.csv`;
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
   },
 
   listNews(params: Record<string, string | number | undefined> = {}) {

@@ -1,4 +1,4 @@
-# Pulso Monitor v1.1
+# Pulso Monitor v1.2
 
 Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye dashboard, gestión editorial, Asistente IA, Radar de fuentes y conexión autorizada con Facebook.
 
@@ -49,6 +49,11 @@ Centro local de administración, redacción y detección de noticias para **Puls
 - Automatización configurable de Facebook, Radar, geolocalización y respaldos mientras el sistema está encendido.
 - Ejecución manual de cada tarea y programación desde un panel central.
 - Alertas relevantes para contenido nuevo, respaldos y errores que requieren atención.
+- Estadísticas editoriales para periodos de 7, 30 y 90 días.
+- Tendencias diarias de noticias creadas y publicadas.
+- Análisis por estado, categoría, municipio y fuente.
+- Indicadores de publicación, uso de IA y cobertura geográfica.
+- Exportación de reportes CSV compatibles con Excel.
 
 ## Instalación rápida en Windows
 
@@ -78,6 +83,12 @@ El módulo **Configuración** permite editar la identidad del medio, consultar l
 El módulo **Automatizaciones** permite activar y programar cuatro tareas: sincronización de Facebook, escaneo de fuentes Radar, geolocalización supervisada y respaldos de SQLite. Cada tarea puede ejecutarse inmediatamente o repetirse entre cada 15 minutos y una vez por semana.
 
 Las tareas programadas funcionan mientras Pulso Monitor y su ventana de API estén encendidos. El historial muestra nuevos hallazgos, copias creadas y errores relevantes. Por seguridad editorial, la automatización nunca aprueba ni publica noticias en Facebook: toda publicación continúa requiriendo revisión humana.
+
+## Estadísticas y reportes
+
+El módulo **Estadísticas** transforma la actividad editorial en indicadores fáciles de revisar. Permite comparar los últimos 7, 30 o 90 días, consultar la evolución diaria, reconocer los temas, municipios y fuentes con mayor actividad, y medir qué proporción del contenido fue publicado, preparado con IA o ubicado en el mapa.
+
+El botón **Exportar Excel** descarga un archivo CSV con las noticias del periodo seleccionado. El archivo incluye título, resumen, fuente, municipio, categoría, estado, fechas, uso de IA y ubicación, y puede abrirse directamente en Excel sin modificar la base de datos.
 
 ## Asistente IA
 
@@ -173,6 +184,7 @@ app/publicaciones/   Aprobación, programación y publicación en Facebook
 app/municipios/      Cobertura e indicadores por municipio
 app/mapa/            Mapa interactivo de incidencias
 app/automatizaciones/ Programación de tareas y alertas operativas
+app/estadisticas/     Indicadores, tendencias y exportación de reportes
 app/usuarios/        Usuarios, roles y contraseñas
 app/configuracion/   Identidad, actividad y respaldos
 components/          Navegación e inicio de sesión
@@ -186,4 +198,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v1.1 administra noticias, equipo editorial, permisos, cobertura municipal, automatizaciones supervisadas, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Incorpora auditoría, alertas y respaldos sin perder los datos de versiones anteriores. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.
+La v1.2 administra noticias, equipo editorial, permisos, cobertura municipal, automatizaciones supervisadas, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Incorpora análisis editorial, reportes exportables, auditoría, alertas y respaldos sin perder los datos de versiones anteriores. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.

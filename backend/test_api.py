@@ -43,9 +43,28 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.1.0")
+        self.assertEqual(health.json()["version"], "1.2.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
+
+    def test_analytics_report_and_csv_export(self):
+        report = self.client.get("/api/estadisticas?days=7", headers=self.headers)
+        self.assertEqual(report.status_code, 200)
+        payload = report.json()
+        self.assertEqual(payload["summary"]["period_days"], 7)
+        self.assertGreaterEqual(payload["summary"]["created"], 4)
+        self.assertGreaterEqual(payload["summary"]["published"], 1)
+        self.assertEqual(len(payload["trend"]), 7)
+        self.assertTrue(any(item["label"] == "Tequila" for item in payload["municipalities"]))
+        self.assertTrue(any(item["label"] == "Publicada" for item in payload["statuses"]))
+
+        exported = self.client.get("/api/estadisticas/exportar.csv?days=7", headers=self.headers)
+        self.assertEqual(exported.status_code, 200)
+        self.assertIn("text/csv", exported.headers["content-type"])
+        self.assertIn("pulso-monitor-estadisticas", exported.headers["content-disposition"])
+        self.assertIn("Título", exported.text)
+        self.assertIn("Tequila", exported.text)
+        self.assertEqual(self.client.get("/api/estadisticas?days=6", headers=self.headers).status_code, 422)
 
     def test_database_migrates_publication_columns(self):
         with tempfile.TemporaryDirectory() as directory:
