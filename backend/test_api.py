@@ -43,7 +43,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.3.0")
+        self.assertEqual(health.json()["version"], "1.4.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -101,6 +101,12 @@ class PulsoMonitorApiTests(unittest.TestCase):
             self.assertIn("facebook_post_id", columns)
             self.assertIn("scheduled_at", columns)
             self.assertIn("planned_at", columns)
+            self.assertIn("editorial_state", columns)
+            self.assertIn("assigned_to", columns)
+            self.assertIn("review_note", columns)
+            self.assertIn("review_requested_at", columns)
+            self.assertIn("approved_at", columns)
+            self.assertIn("approved_by", columns)
             self.assertIn("location", columns)
             self.assertIn("latitude", columns)
             self.assertIn("longitude", columns)
@@ -153,6 +159,36 @@ class PulsoMonitorApiTests(unittest.TestCase):
             params={"start": datetime.now(timezone.utc).isoformat(), "end": (datetime.now(timezone.utc) + timedelta(days=63)).isoformat()},
         )
         self.assertEqual(too_wide.status_code, 400)
+
+    def test_editorial_assignment_review_and_approval(self):
+        news = self.client.post(
+            "/api/noticias",
+            headers=self.headers,
+            json={
+                "title": "Borrador para flujo editorial", "summary": "Contenido por revisar", "content": "Texto completo",
+                "source": "Prueba", "author": "Pulso", "municipality": "Tequila", "category": "Comunidad",
+                "priority": "Alta", "status": "Pendiente", "image_url": "", "url": "", "published_at": None,
+                "is_ai": False, "tags": ["revision"],
+            },
+        ).json()
+        self.assertEqual(news["editorial_state"], "Borrador")
+        requested = self.client.put(
+            f"/api/noticias/{news['id']}/flujo-editorial", headers=self.headers,
+            json={"action": "request_review", "assigned_to": None, "note": "Lista para validar"},
+        )
+        self.assertEqual(requested.status_code, 200)
+        self.assertEqual(requested.json()["editorial_state"], "En revisión")
+        self.assertIsNotNone(requested.json()["assigned_to"])
+        approved = self.client.put(
+            f"/api/noticias/{news['id']}/flujo-editorial", headers=self.headers,
+            json={"action": "approve", "assigned_to": requested.json()["assigned_to"], "note": "Contenido verificado"},
+        )
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved.json()["editorial_state"], "Aprobada")
+        self.assertIsNotNone(approved.json()["approved_at"])
+        board = self.client.get("/api/flujo-editorial?state=Aprobada", headers=self.headers)
+        self.assertEqual(board.status_code, 200)
+        self.assertTrue(any(item["id"] == news["id"] for item in board.json()["items"]))
 
     def test_automations_permissions_execution_and_alerts(self):
         jobs = self.client.get("/api/automatizaciones", headers=self.headers)
@@ -375,6 +411,8 @@ class PulsoMonitorApiTests(unittest.TestCase):
         created = self.client.post("/api/noticias", headers=self.headers, json=payload)
         self.assertEqual(created.status_code, 201)
         news_id = created.json()["id"]
+        self.client.put(f"/api/noticias/{news_id}/flujo-editorial", headers=self.headers, json={"action": "request_review", "assigned_to": None, "note": ""})
+        self.client.put(f"/api/noticias/{news_id}/flujo-editorial", headers=self.headers, json={"action": "approve", "assigned_to": None, "note": ""})
         payload["status"] = "Publicada"
         updated = self.client.put(f"/api/noticias/{news_id}", headers=self.headers, json=payload)
         self.assertEqual(updated.json()["status"], "Publicada")
@@ -402,6 +440,12 @@ class PulsoMonitorApiTests(unittest.TestCase):
         }
 
         immediate_news = self.client.post("/api/noticias", headers=self.headers, json=payload).json()
+        blocked = self.client.post(
+            f"/api/noticias/{immediate_news['id']}/publicar-facebook", headers=self.headers, json={"scheduled_at": None}
+        )
+        self.assertEqual(blocked.status_code, 409)
+        self.client.put(f"/api/noticias/{immediate_news['id']}/flujo-editorial", headers=self.headers, json={"action": "request_review", "assigned_to": None, "note": ""})
+        self.client.put(f"/api/noticias/{immediate_news['id']}/flujo-editorial", headers=self.headers, json={"action": "approve", "assigned_to": None, "note": ""})
         with patch.object(main, "facebook_graph_post", return_value={"id": "123456_900"}) as publish_mock:
             published = self.client.post(
                 f"/api/noticias/{immediate_news['id']}/publicar-facebook",
@@ -415,6 +459,8 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertIn("#PulsoTequila", publish_mock.call_args.args[2]["message"])
 
         scheduled_news = self.client.post("/api/noticias", headers=self.headers, json=payload).json()
+        self.client.put(f"/api/noticias/{scheduled_news['id']}/flujo-editorial", headers=self.headers, json={"action": "request_review", "assigned_to": None, "note": ""})
+        self.client.put(f"/api/noticias/{scheduled_news['id']}/flujo-editorial", headers=self.headers, json={"action": "approve", "assigned_to": None, "note": ""})
         future = (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat()
         with patch.object(main, "facebook_graph_post", return_value={"id": "123456_901"}) as schedule_mock:
             scheduled = self.client.post(
