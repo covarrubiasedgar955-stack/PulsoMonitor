@@ -9,6 +9,9 @@ import type {
   AutomationKey,
   BackupInfo,
   CalendarResponse,
+  EditorialAction,
+  EditorialBoard,
+  EditorialItem,
   FacebookPostList,
   FacebookPrepareResult,
   FacebookPublishResult,
@@ -97,6 +100,10 @@ export const api = {
 
   currentUser() {
     return request<UserInfo>("/api/auth/me");
+  },
+
+  editorialTeam() {
+    return request<UserInfo[]>("/api/equipo-editorial");
   },
 
   listUsers() {
@@ -217,6 +224,20 @@ export const api = {
     return request<NewsItem>(`/api/noticias/${id}/plan-editorial`, {
       method: "PUT",
       body: JSON.stringify({ planned_at: plannedAt }),
+    });
+  },
+
+  editorialBoard(state = "", assignedTo?: number) {
+    const search = new URLSearchParams();
+    if (state) search.set("state", state);
+    if (assignedTo !== undefined) search.set("assigned_to", String(assignedTo));
+    return request<EditorialBoard>(`/api/flujo-editorial${search.size ? `?${search.toString()}` : ""}`);
+  },
+
+  updateEditorialFlow(id: number, action: EditorialAction, assignedTo: number | null = null, note = "") {
+    return request<EditorialItem>(`/api/noticias/${id}/flujo-editorial`, {
+      method: "PUT",
+      body: JSON.stringify({ action, assigned_to: assignedTo, note }),
     });
   },
 
