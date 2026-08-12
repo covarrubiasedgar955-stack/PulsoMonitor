@@ -1127,6 +1127,21 @@ def create_notification(level: Literal["success", "error", "info"], title: str, 
 
 def row_to_news(row: sqlite3.Row) -> NewsItem:
     data = dict(row)
+    # Imported feeds can contain legacy values that predate the API limits.
+    # Normalize them when serializing so one malformed item cannot make an
+    # entire news or editorial-board request fail with a validation error.
+    for field, limit in {
+        "title": 180,
+        "summary": 800,
+        "source": 120,
+        "author": 120,
+        "municipality": 100,
+        "category": 80,
+        "location": 180,
+    }.items():
+        value = data.get(field)
+        if isinstance(value, str) and len(value) > limit:
+            data[field] = value[:limit].rstrip()
     data["is_ai"] = bool(data["is_ai"])
     data["location_reviewed"] = bool(data.get("location_reviewed", 0))
     try:
