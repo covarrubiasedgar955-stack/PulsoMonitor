@@ -24,6 +24,7 @@ export default function EditorialReviewPage() {
   const [state, setState] = useState("");
   const [assignee, setAssignee] = useState("");
   const [municipality, setMunicipality] = useState("");
+  const [sort, setSort] = useState("newest");
   const [selected, setSelected] = useState<EditorialItem | null>(null);
   const [noteAction, setNoteAction] = useState<EditorialAction | null>(null);
   const [note, setNote] = useState("");
@@ -37,7 +38,7 @@ export default function EditorialReviewPage() {
     setError("");
     try {
       const [result, members, current, municipalityList] = await Promise.all([
-        api.editorialBoard(state, assignee ? Number(assignee) : undefined, municipality),
+        api.editorialBoard(state, assignee ? Number(assignee) : undefined, municipality, sort),
         api.editorialTeam(),
         api.currentUser(),
         api.listMunicipalities(),
@@ -51,7 +52,7 @@ export default function EditorialReviewPage() {
     } finally {
       setLoading(false);
     }
-  }, [assignee, municipality, state]);
+  }, [assignee, municipality, sort, state]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -122,6 +123,7 @@ export default function EditorialReviewPage() {
             <select value={municipality} onChange={(event) => setMunicipality(event.target.value)} aria-label="Municipio"><option value="">Todos los municipios</option>{municipalities.map((item) => <option value={item.name} key={item.id}>{item.name}</option>)}</select>
             <select value={state} onChange={(event) => setState(event.target.value)} aria-label="Estado editorial"><option value="">Todos los estados</option>{states.map((value) => <option key={value}>{value}</option>)}</select>
             <select value={assignee} onChange={(event) => setAssignee(event.target.value)} aria-label="Responsable"><option value="">Todo el equipo</option>{team.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select>
+            <select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="Ordenar noticias"><option value="newest">Más recientes primero</option><option value="oldest">Más antiguas primero</option><option value="priority_desc">Mayor importancia</option><option value="priority_asc">Menor importancia</option></select>
             <button className="button secondary" onClick={() => void load()}>Actualizar</button>
           </div>
           <div className="editorial-list">
