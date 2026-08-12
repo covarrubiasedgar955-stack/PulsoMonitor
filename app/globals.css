@@ -87,7 +87,7 @@ a { color: inherit; text-decoration: none; }
 .panel-header h2 { margin: 0 0 4px; font-size: 20px; }
 .panel-header p { margin: 0; color: var(--muted); font-size: 13px; }
 .filters { display: grid; grid-template-columns: minmax(260px, 1fr) 190px 190px auto; gap: 12px; padding: 20px 22px; border-bottom: 1px solid var(--line); }
-.news-filters { grid-template-columns: minmax(240px, 1fr) 170px 170px 170px auto; }
+.news-filters { grid-template-columns: minmax(240px, 1fr) repeat(4, 160px) auto; }
 .filters select, .search-box { height: 43px; border: 1px solid var(--line); border-radius: 10px; background: #fafbfd; }
 .filters select { padding: 0 12px; color: var(--ink); outline: none; }
 .search-box { display: flex; align-items: center; gap: 8px; padding: 0 12px; }
@@ -470,6 +470,7 @@ tr:hover td { background: #fbfcff; }
 .automation-icon.radar { color: #d66a09; background: #fff0de; }
 .automation-icon.geolocation { color: #7048c8; background: #eee8ff; }
 .automation-icon.backup { color: #159447; background: #e1f6e9; }
+.automation-icon.cleanup { color: #c24545; background: #fde8e8; }
 .switch { position: relative; width: 43px; height: 24px; }
 .switch input { position: absolute; opacity: 0; pointer-events: none; }
 .switch span { position: absolute; inset: 0; border-radius: 999px; background: #ccd3df; transition: .2s ease; cursor: pointer; }
