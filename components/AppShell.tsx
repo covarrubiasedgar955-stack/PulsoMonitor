@@ -9,6 +9,7 @@ import type { UserInfo } from "@/types/news";
 const navigation = [
   { href: "/", label: "Dashboard", icon: "▦", ready: true },
   { href: "/calendario", label: "Calendario", icon: "□", ready: true },
+  { href: "/revision", label: "Revisión editorial", icon: "✓", ready: true },
   { href: "/estadisticas", label: "Estadísticas", icon: "▥", ready: true },
   { href: "/automatizaciones", label: "Automatizaciones", icon: "↻", ready: true, adminOnly: true },
   { href: "/noticias", label: "Noticias", icon: "▤", ready: true },
@@ -129,7 +130,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </nav>
         <div className="sidebar-footer">
           <span className="status-dot" /> API local
-          <small>Versión 1.3</small>
+          <small>Versión 1.4</small>
         </div>
       </aside>
       {menuOpen && <button className="backdrop" aria-label="Cerrar menú" onClick={() => setMenuOpen(false)} />}
