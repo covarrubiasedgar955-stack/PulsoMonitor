@@ -38,6 +38,10 @@ function statusClass(value: string) {
   return `status status-${value.toLowerCase().replaceAll(" ", "-").replace("ó", "o")}`;
 }
 
+function imageStyle(value: string) {
+  return value ? { backgroundImage: `url("${value.replaceAll('"', "%22")}")` } : undefined;
+}
+
 function NewsModal({ item, municipalities, onClose, onSaved }: { item: NewsItem | null; municipalities: Municipality[]; onClose: () => void; onSaved: () => void }) {
   const [draft, setDraft] = useState<Draft>(() => item ? {
     title: item.title,
@@ -205,7 +209,7 @@ export default function NewsPage() {
               {items.map((item) => {
                 const lockedByFacebook = Boolean(item.facebook_post_id);
                 return <tr key={item.id}>
-                  <td className="news-cell"><strong>{item.title}</strong><small>{item.summary || item.source}</small></td>
+                  <td className="news-cell"><span className={`news-thumbnail ${item.image_url ? "has-image" : ""}`} style={imageStyle(item.image_url)} aria-label={item.image_url ? "Imagen de la noticia" : "Noticia sin imagen"}>{item.image_url ? "" : "📰"}</span><div><strong>{item.title}</strong><small>{item.summary || item.source}</small></div></td>
                   <td>{item.municipality}</td>
                   <td><span className="tag">{item.category}</span></td>
                   <td><span className={`priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span></td>

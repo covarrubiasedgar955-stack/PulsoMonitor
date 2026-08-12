@@ -349,6 +349,7 @@ def init_database() -> None:
                 external_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL DEFAULT '',
+                image_url TEXT NOT NULL DEFAULT '',
                 url TEXT NOT NULL DEFAULT '',
                 published_at TEXT,
                 detected_at TEXT NOT NULL,
@@ -358,6 +359,9 @@ def init_database() -> None:
             )
             """
         )
+        radar_item_columns = {row["name"] for row in db.execute("PRAGMA table_info(radar_items)").fetchall()}
+        if "image_url" not in radar_item_columns:
+            db.execute("ALTER TABLE radar_items ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
         db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_detected ON radar_items(detected_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_imported ON radar_items(imported_news_id)")
         db.execute(
@@ -938,6 +942,7 @@ class RadarItem(BaseModel):
     category: str
     title: str
     summary: str
+    image_url: str
     url: str
     published_at: str | None
     detected_at: str
@@ -1619,6 +1624,63 @@ def feed_published_at(entry: dict) -> str | None:
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if not parsed:
         return None
+    try:
+        return datetime.fromtimestamp(calendar.timegm(parsed), timezone.utc).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def valid_public_image_url(value: str, base_url: str = "") -> str:
+    candidate = unescape(str(value or "").strip())
+    if not candidate:
+        return ""
+    candidate = urljoin(base_url, candidate)[:1200]
+    try:
+        public_feed_url(candidate)
+    except ValueError:
+        return ""
+    return candidate
+
+
+def feed_image_url(entry: dict, link: str) -> str:
+    candidates: list[str] = []
+    for key in ("media_content", "media_thumbnail", "enclosures"):
+        for item in entry.get(key) or []:
+            if isinstance(item, dict):
+                candidates.append(str(item.get("url") or item.get("href") or ""))
+    for item in entry.get("links") or []:
+        if isinstance(item, dict) and (
+            str(item.get("rel") or "").lower() == "enclosure"
+            or str(item.get("type") or "").lower().startswith("image/")
+        ):
+            candidates.append(str(item.get("href") or item.get("url") or ""))
+    image = entry.get("image")
+    if isinstance(image, dict):
+        candidates.append(str(image.get("href") or image.get("url") or ""))
+    html_text = str(entry.get("summary") or entry.get("description") or "")
+    image_match = re.search(r"<img\b[^>]*\bsrc\s*=\s*['\"]([^'\"]+)", html_text, flags=re.IGNORECASE)
+    if image_match:
+        candidates.append(image_match.group(1))
+    for candidate in candidates:
+        accepted = valid_public_image_url(candidate, link)
+        if accepted:
+            return accepted
+    return ""
+
+
+def fetch_open_graph_image(url: str) -> str:
+    try:
+        html_text = fetch_feed_bytes(url).decode("utf-8", errors="ignore")
+    except (ValueError, httpx.HTTPError, UnicodeError):
+        return ""
+    for tag in re.findall(r"<meta\b[^>]*>", html_text, flags=re.IGNORECASE):
+        name = re.search(r"\b(?:property|name)\s*=\s*['\"]([^'\"]+)", tag, flags=re.IGNORECASE)
+        content = re.search(r"\bcontent\s*=\s*['\"]([^'\"]+)", tag, flags=re.IGNORECASE)
+        if name and content and name.group(1).lower() in {"og:image", "og:image:url", "twitter:image"}:
+            accepted = valid_public_image_url(content.group(1), url)
+            if accepted:
+                return accepted
+    return ""
 
 
 LOCAL_COVERAGE = (
@@ -1687,19 +1749,13 @@ def import_radar_item_record(db: sqlite3.Connection, item: sqlite3.Row, now: str
         (
             item["title"], item["summary"], item["summary"], item["source_name"],
             "Cobertura automática", item["municipality"], item["category"], "Media", "Pendiente",
-            "", item["url"], item["published_at"], now, 0,
+            item["image_url"], item["url"], item["published_at"], now, 0,
             json.dumps(["radar", "cobertura local", item["municipality"].lower()], ensure_ascii=False), now,
         ),
     )
     news_id = int(cursor.lastrowid)
     db.execute("UPDATE radar_items SET imported_news_id = ? WHERE id = ?", (news_id, item["id"]))
     return news_id
-    try:
-        return datetime.fromtimestamp(calendar.timegm(parsed), timezone.utc).isoformat(timespec="seconds")
-    except (TypeError, ValueError, OverflowError):
-        return None
-
-
 def row_to_radar_source(row: sqlite3.Row) -> RadarSource:
     data = dict(row)
     data["enabled"] = bool(data["enabled"])
@@ -1717,6 +1773,7 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
         raise ValueError("No se encontraron publicaciones en esta dirección RSS o Atom.")
     detected = 0
     imported = 0
+    open_graph_budget = 10
     now = utc_now()
     with connection() as db:
         for entry in parsed.entries[:80]:
@@ -1728,13 +1785,21 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
             raw_id = str(entry.get("id") or entry.get("guid") or link or f"{title}|{published_at or ''}")
             external_id = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()
             summary = clean_feed_text(entry.get("summary") or entry.get("description"), 2_000)
+            image_url = feed_image_url(entry, link)
+            existing = db.execute(
+                "SELECT id FROM radar_items WHERE source_id = ? AND external_id = ?",
+                (source["id"], external_id),
+            ).fetchone()
+            if existing is None and not image_url and link and open_graph_budget > 0:
+                open_graph_budget -= 1
+                image_url = fetch_open_graph_image(link)
             cursor = db.execute(
                 """
                 INSERT OR IGNORE INTO radar_items (
-                    source_id, external_id, title, summary, url, published_at, detected_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    source_id, external_id, title, summary, image_url, url, published_at, detected_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (source["id"], external_id, title, summary, link, published_at, now),
+                (source["id"], external_id, title, summary, image_url, link, published_at, now),
             )
             detected += max(cursor.rowcount, 0)
         if bool(source["auto_import"]):
@@ -2744,6 +2809,7 @@ def sync_facebook_posts() -> FacebookSyncResult:
             message = clean_feed_text(str(post.get("message") or ""), 12_000)
             if not external_id or not message:
                 continue
+            picture_url = valid_public_image_url(str(post.get("full_picture") or ""))
             cursor = db.execute(
                 """
                 INSERT OR IGNORE INTO facebook_posts (
@@ -2754,12 +2820,17 @@ def sync_facebook_posts() -> FacebookSyncResult:
                     external_id,
                     message,
                     str(post.get("permalink_url") or "")[:1200],
-                    str(post.get("full_picture") or "")[:1200],
+                    picture_url,
                     str(post.get("created_time") or "") or None,
                     now,
                 ),
             )
             detected += max(cursor.rowcount, 0)
+            if picture_url:
+                db.execute(
+                    "UPDATE facebook_posts SET picture_url = ? WHERE external_id = ? AND TRIM(picture_url) = ''",
+                    (picture_url, external_id),
+                )
         db.execute(
             "UPDATE facebook_state SET last_sync = ?, last_error = '', updated_at = ? WHERE id = 1",
             (now, now),

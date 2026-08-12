@@ -113,6 +113,8 @@ class PulsoMonitorApiTests(unittest.TestCase):
             self.assertIn("location_source", columns)
             self.assertIn("location_confidence", columns)
             self.assertIn("location_reviewed", columns)
+            radar_columns = {row[1] for row in db.execute("PRAGMA table_info(radar_items)").fetchall()}
+            self.assertIn("image_url", radar_columns)
             self.assertIn("municipalities", tables)
             self.assertIn("geocoding_cache", tables)
             self.assertIn("users", tables)
@@ -134,9 +136,10 @@ class PulsoMonitorApiTests(unittest.TestCase):
         <rss version="2.0"><channel><title>Cobertura</title>
           <item><guid>cobertura-auto-1</guid><title>Amatitán anuncia nueva jornada comunitaria</title>
           <description>La actividad pública se realizará esta semana.</description>
+          <enclosure url="https://example.com/amatitan.jpg" type="image/jpeg" />
           <link>https://example.com/cobertura-auto-1</link><pubDate>{published}</pubDate></item>
         </channel></rss>""".encode("utf-8")
-        with patch.object(main, "fetch_feed_bytes", return_value=feed):
+        with patch.object(main, "fetch_feed_bytes", return_value=feed), patch.object(main, "public_feed_url", return_value=None):
             result = self.client.post(f"/api/radar/escanear?source_id={source['id']}", headers=self.headers)
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()["detected"], 1)
@@ -145,6 +148,8 @@ class PulsoMonitorApiTests(unittest.TestCase):
         match = next(item for item in board["items"] if item["url"] == "https://example.com/cobertura-auto-1")
         self.assertEqual(match["municipality"], "Amatitán")
         self.assertEqual(match["author"], "Cobertura automática")
+        self.assertEqual(match["image_url"], "https://example.com/amatitan.jpg")
+        self.assertIsNotNone(match["published_at"])
 
     def test_editorial_calendar_and_planning(self):
         news = self.client.get("/api/noticias?limit=100", headers=self.headers).json()["items"]
@@ -504,7 +509,9 @@ class PulsoMonitorApiTests(unittest.TestCase):
                 ]
             }
 
-        with patch.object(main, "facebook_graph_get", side_effect=graph_response):
+        with patch.object(main, "facebook_graph_get", side_effect=graph_response), patch.object(
+            main, "public_feed_url", return_value=None
+        ):
             connected = self.client.post(
                 "/api/facebook/conectar",
                 headers=self.headers,
@@ -519,13 +526,15 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(second_sync.json()["detected"], 0)
         posts = self.client.get("/api/facebook/publicaciones?pending_only=true", headers=self.headers)
         self.assertEqual(posts.json()["total"], 2)
-        post_id = posts.json()["items"][0]["id"]
+        pictured_post = next(item for item in posts.json()["items"] if item["picture_url"])
+        post_id = pictured_post["id"]
         imported = self.client.post(f"/api/facebook/publicaciones/{post_id}/preparar", headers=self.headers)
         self.assertEqual(imported.status_code, 201)
         self.assertEqual(imported.json()["news"]["status"], "Pendiente")
         self.assertTrue(imported.json()["news"]["is_ai"])
+        self.assertEqual(imported.json()["news"]["image_url"], "https://example.com/imagen.jpg")
         self.assertEqual(imported.json()["provider"], "local")
-        self.assertIn(imported.json()["news"]["category"], ["Eventos", "Servicios"])
+        self.assertIn(imported.json()["news"]["category"], ["Eventos", "Servicios", "Turismo"])
         duplicate = self.client.post(f"/api/facebook/publicaciones/{post_id}/preparar", headers=self.headers)
         self.assertEqual(duplicate.status_code, 409)
 
@@ -855,7 +864,9 @@ class PulsoMonitorApiTests(unittest.TestCase):
           <description>El encuentro se realizará el fin de semana.</description>
           <link>https://example.com/noticia-2</link></item>
         </channel></rss>""".encode("utf-8")
-        with patch.object(main, "fetch_feed_bytes", return_value=feed):
+        with patch.object(main, "fetch_feed_bytes", return_value=feed), patch.object(
+            main, "fetch_open_graph_image", return_value="https://example.com/portada-og.jpg"
+        ):
             first_scan = self.client.post(f"/api/radar/escanear?source_id={source_id}", headers=self.headers)
             second_scan = self.client.post(f"/api/radar/escanear?source_id={source_id}", headers=self.headers)
         self.assertEqual(first_scan.status_code, 200)
@@ -869,6 +880,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(imported.status_code, 201)
         self.assertEqual(imported.json()["status"], "Pendiente")
         self.assertEqual(imported.json()["source"], "Fuente de prueba")
+        self.assertTrue(imported.json()["image_url"])
         duplicate = self.client.post(f"/api/radar/hallazgos/{item_id}/importar", headers=self.headers)
         self.assertEqual(duplicate.status_code, 409)
 

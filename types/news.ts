@@ -340,6 +340,7 @@ export interface RadarItem {
   category: string;
   title: string;
   summary: string;
+  image_url: string;
   url: string;
   published_at: string | null;
   detected_at: string;
