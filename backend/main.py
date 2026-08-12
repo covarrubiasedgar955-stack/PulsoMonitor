@@ -1976,8 +1976,8 @@ def looks_generic_news_image(image_url: str) -> bool:
     return any(hint in lowered for hint in GENERIC_IMAGE_HINTS) or filename.startswith(("logo.", "logo-", "logo_", "icon."))
 
 
-def backfill_news_images(limit: int = 40) -> tuple[int, int, int]:
-    """Recover useful images and remove repeated generic covers."""
+def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
+    """Recover useful images without leaving news empty when no replacement exists."""
     with connection() as db:
         repeated = {
             row["image_url"] for row in db.execute(
@@ -1989,15 +1989,15 @@ def backfill_news_images(limit: int = 40) -> tuple[int, int, int]:
         generic_rows = db.execute(
             "SELECT id, image_url FROM noticias WHERE TRIM(COALESCE(image_url, '')) != ''"
         ).fetchall()
-        discard_ids = [
+        explicitly_generic_ids = [
             row["id"] for row in generic_rows
-            if row["image_url"] in repeated or looks_generic_news_image(row["image_url"])
+            if looks_generic_news_image(row["image_url"])
         ]
-        if discard_ids:
-            placeholders = ",".join("?" for _ in discard_ids)
+        if explicitly_generic_ids:
+            placeholders = ",".join("?" for _ in explicitly_generic_ids)
             db.execute(
                 f"UPDATE noticias SET image_url = '', updated_at = ? WHERE id IN ({placeholders})",
-                (utc_now(), *discard_ids),
+                (utc_now(), *explicitly_generic_ids),
             )
 
     with connection() as db:
@@ -2025,11 +2025,11 @@ def backfill_news_images(limit: int = 40) -> tuple[int, int, int]:
     recovered = 0
     for row in rows:
         image_url = valid_public_image_url(row["facebook_image"]) or valid_public_image_url(row["radar_image"])
-        if image_url in repeated or looks_generic_news_image(image_url):
+        if looks_generic_news_image(image_url):
             image_url = ""
         if not image_url and row["url"]:
             image_url = fetch_open_graph_image(row["url"])
-            if image_url in repeated or looks_generic_news_image(image_url):
+            if looks_generic_news_image(image_url):
                 image_url = ""
         if not image_url:
             continue
@@ -2039,7 +2039,7 @@ def backfill_news_images(limit: int = 40) -> tuple[int, int, int]:
                 (image_url, utc_now(), row["id"]),
             )
             recovered += int(cursor.rowcount)
-    return len(rows), recovered, len(discard_ids)
+    return len(rows), recovered, len(explicitly_generic_ids)
 
 
 def run_automation_job(key: AutomationKey, scheduled: bool = False) -> AutomationJob:
