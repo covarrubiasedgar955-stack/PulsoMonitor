@@ -286,6 +286,7 @@ def init_database() -> None:
             ("facebook", "Facebook", "Busca publicaciones nuevas en la página conectada.", 0, 30),
             ("radar", "Radar", "Consulta todas las fuentes RSS o Atom activas.", 0, 30),
             ("geolocation", "Geolocalización", "Intenta ubicar noticias pendientes de forma supervisada.", 0, 15),
+            ("images", "Recuperar imágenes", "Completa las imágenes faltantes desde Facebook, Radar o la fuente original.", 1, 1440),
             ("backup", "Respaldos", "Crea una copia local de la base de datos.", 0, 1440),
             ("cleanup", "Limpieza editorial", "Elimina noticias no utilizadas siete días después de su fecha de origen.", 1, 1440),
         )
@@ -588,7 +589,7 @@ class BackupInfo(BaseModel):
     created_at: str
 
 
-AutomationKey = Literal["facebook", "radar", "geolocation", "backup", "cleanup"]
+AutomationKey = Literal["facebook", "radar", "geolocation", "images", "backup", "cleanup"]
 
 
 class AutomationJob(BaseModel):
@@ -1962,6 +1963,45 @@ def cleanup_unused_news(days: int = 7) -> int:
     return int(cursor.rowcount)
 
 
+def backfill_news_images(limit: int = 40) -> tuple[int, int]:
+    """Recover images for existing news without replacing editorial choices."""
+    with connection() as db:
+        rows = db.execute(
+            """
+            SELECT n.id, COALESCE(n.url, '') AS url,
+                COALESCE((
+                    SELECT fp.picture_url FROM facebook_posts fp
+                    WHERE fp.imported_news_id = n.id AND TRIM(COALESCE(fp.picture_url, '')) != ''
+                    ORDER BY fp.id DESC LIMIT 1
+                ), '') AS facebook_image,
+                COALESCE((
+                    SELECT ri.image_url FROM radar_items ri
+                    WHERE ri.imported_news_id = n.id AND TRIM(COALESCE(ri.image_url, '')) != ''
+                    ORDER BY ri.id DESC LIMIT 1
+                ), '') AS radar_image
+            FROM noticias n
+            WHERE TRIM(COALESCE(n.image_url, '')) = ''
+            ORDER BY datetime(COALESCE(n.published_at, n.created_at)) DESC
+            LIMIT ?
+            """,
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+
+    recovered = 0
+    for row in rows:
+        image_url = valid_public_image_url(row["facebook_image"]) or valid_public_image_url(row["radar_image"])
+        if not image_url and row["url"]:
+            image_url = fetch_open_graph_image(row["url"])
+        if not image_url:
+            continue
+        with connection() as db:
+            cursor = db.execute(
+                "UPDATE noticias SET image_url = ?, updated_at = ? WHERE id = ? AND TRIM(COALESCE(image_url, '')) = ''",
+                (image_url, utc_now(), row["id"]),
+            )
+            recovered += int(cursor.rowcount)
+    return len(rows), recovered
+
 def run_automation_job(key: AutomationKey, scheduled: bool = False) -> AutomationJob:
     with AUTOMATION_LOCK:
         with connection() as db:
@@ -1994,6 +2034,10 @@ def run_automation_job(key: AutomationKey, scheduled: bool = False) -> Automatio
             elif key == "geolocation":
                 message = geolocate_automation_batch()
                 should_notify = not message.startswith("0 analizadas")
+            elif key == "images":
+                checked, recovered = backfill_news_images()
+                message = f"{checked} noticias revisadas · {recovered} imágenes recuperadas."
+                should_notify = recovered > 0
             elif key == "backup":
                 created = create_database_backup()
                 message = f"Respaldo creado: {created.name} ({created.size} bytes)."
@@ -2314,7 +2358,8 @@ def list_automations(user: Annotated[AuthenticatedUser, Depends(current_user)]) 
             """
             SELECT * FROM automation_jobs
             ORDER BY CASE key WHEN 'facebook' THEN 1 WHEN 'radar' THEN 2
-                     WHEN 'geolocation' THEN 3 WHEN 'backup' THEN 4 ELSE 5 END
+                     WHEN 'geolocation' THEN 3 WHEN 'images' THEN 4
+                     WHEN 'backup' THEN 5 ELSE 6 END
             """
         ).fetchall()
     return [row_to_automation(row) for row in rows]

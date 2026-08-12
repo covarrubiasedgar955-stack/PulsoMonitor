@@ -474,6 +474,7 @@ tr:hover td { background: #fbfcff; }
 .automation-icon.geolocation { color: #7048c8; background: #eee8ff; }
 .automation-icon.backup { color: #159447; background: #e1f6e9; }
 .automation-icon.cleanup { color: #c24545; background: #fde8e8; }
+.automation-icon.images { color: #2563eb; background: #e8f0ff; }
 .switch { position: relative; width: 43px; height: 24px; }
 .switch input { position: absolute; opacity: 0; pointer-events: none; }
 .switch span { position: absolute; inset: 0; border-radius: 999px; background: #ccd3df; transition: .2s ease; cursor: pointer; }

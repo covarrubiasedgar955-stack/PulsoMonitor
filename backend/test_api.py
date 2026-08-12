@@ -330,6 +330,37 @@ class PulsoMonitorApiTests(unittest.TestCase):
                     [(row["status"], row["editorial_state"], row["facebook_post_id"], row["id"]) for row in existing],
                 )
 
+    def test_image_backfill_recovers_saved_facebook_picture(self):
+        payload = {
+            "title": "Recuperación de imagen 156", "summary": "Contenido con imagen pendiente", "content": "Texto",
+            "source": "Facebook", "author": "Pulso", "municipality": "Tequila", "category": "General",
+            "priority": "Media", "status": "Pendiente", "image_url": "", "url": "",
+            "published_at": datetime.now(timezone.utc).isoformat(), "is_ai": False, "tags": ["imagen-156"],
+        }
+        news = self.client.post("/api/noticias", headers=self.headers, json=payload).json()
+        external_id = f"imagen-156-{news['id']}"
+        try:
+            with main.connection() as db:
+                db.execute(
+                    """INSERT INTO facebook_posts
+                    (external_id, message, permalink_url, picture_url, created_time, detected_at, imported_news_id)
+                    VALUES (?, ?, '', ?, ?, ?, ?)""",
+                    (external_id, "Publicación con imagen", "https://images.example.org/portada.jpg",
+                     datetime.now(timezone.utc).isoformat(), main.utc_now(), news["id"]),
+                )
+            with patch.object(main, "valid_public_image_url", side_effect=lambda value, base_url="": value or ""), patch.object(
+                main, "fetch_open_graph_image", return_value=""
+            ):
+                checked, recovered = main.backfill_news_images(limit=200)
+            self.assertGreaterEqual(checked, 1)
+            self.assertGreaterEqual(recovered, 1)
+            updated = self.client.get(f"/api/noticias/{news['id']}", headers=self.headers).json()
+            self.assertEqual(updated["image_url"], "https://images.example.org/portada.jpg")
+        finally:
+            with main.connection() as db:
+                db.execute("DELETE FROM facebook_posts WHERE external_id = ?", (external_id,))
+                db.execute("DELETE FROM noticias WHERE id = ?", (news["id"],))
+
     def test_news_can_be_sorted_by_source_date_and_priority(self):
         base = {
             "title": "Orden prueba 153 reciente", "summary": "Contenido para ordenar", "content": "Texto",
@@ -364,7 +395,10 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_automations_permissions_execution_and_alerts(self):
         jobs = self.client.get("/api/automatizaciones", headers=self.headers)
         self.assertEqual(jobs.status_code, 200)
-        self.assertEqual({item["key"] for item in jobs.json()}, {"facebook", "radar", "geolocation", "backup", "cleanup"})
+        self.assertEqual({item["key"] for item in jobs.json()}, {"facebook", "radar", "geolocation", "images", "backup", "cleanup"})
+        images = next(item for item in jobs.json() if item["key"] == "images")
+        self.assertTrue(images["enabled"])
+        self.assertEqual(images["interval_minutes"], 1440)
         cleanup = next(item for item in jobs.json() if item["key"] == "cleanup")
         self.assertTrue(cleanup["enabled"])
         self.assertEqual(cleanup["interval_minutes"], 1440)
