@@ -259,10 +259,79 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(empty.json()["total"], 0)
         self.assertEqual(empty.json()["items"], [])
 
+    def test_cleanup_removes_only_expired_unused_news(self):
+        with main.connection() as db:
+            existing = db.execute(
+                "SELECT id, status, editorial_state, facebook_post_id FROM noticias"
+            ).fetchall()
+            db.execute("UPDATE noticias SET status = 'Publicada', editorial_state = 'Aprobada'")
+        old_date = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        payload = {
+            "title": "Limpieza automática de prueba", "summary": "Contenido temporal", "content": "Texto temporal",
+            "source": "Prueba", "author": "Pulso", "municipality": "Tequila", "category": "General",
+            "priority": "Media", "status": "Pendiente", "image_url": "", "url": "", "published_at": old_date,
+            "is_ai": False, "tags": ["limpieza"],
+        }
+        expired = self.client.post("/api/noticias", headers=self.headers, json=payload).json()
+        payload["title"] = "Publicada protegida de prueba"
+        protected = self.client.post("/api/noticias", headers=self.headers, json=payload).json()
+        with main.connection() as db:
+            db.execute(
+                "UPDATE noticias SET status = 'Publicada', editorial_state = 'Aprobada' WHERE id = ?",
+                (protected["id"],),
+            )
+        try:
+            deleted = main.cleanup_unused_news()
+            self.assertEqual(deleted, 1)
+            with main.connection() as db:
+                self.assertIsNone(db.execute("SELECT id FROM noticias WHERE id = ?", (expired["id"],)).fetchone())
+                self.assertIsNotNone(db.execute("SELECT id FROM noticias WHERE id = ?", (protected["id"],)).fetchone())
+        finally:
+            with main.connection() as db:
+                db.execute("DELETE FROM noticias WHERE id IN (?, ?)", (expired["id"], protected["id"]))
+                db.executemany(
+                    "UPDATE noticias SET status = ?, editorial_state = ?, facebook_post_id = ? WHERE id = ?",
+                    [(row["status"], row["editorial_state"], row["facebook_post_id"], row["id"]) for row in existing],
+                )
+
+    def test_news_can_be_sorted_by_source_date_and_priority(self):
+        base = {
+            "title": "Orden prueba 153 reciente", "summary": "Contenido para ordenar", "content": "Texto",
+            "source": "Prueba", "author": "Pulso", "municipality": "Tequila", "category": "General",
+            "priority": "Baja", "status": "Pendiente", "image_url": "", "url": "",
+            "published_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+            "is_ai": False, "tags": ["orden-153"],
+        }
+        recent = self.client.post("/api/noticias", headers=self.headers, json=base).json()
+        base.update({
+            "title": "Orden prueba 153 antigua urgente", "priority": "Urgente",
+            "published_at": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
+        })
+        old = self.client.post("/api/noticias", headers=self.headers, json=base).json()
+        try:
+            newest = self.client.get(
+                "/api/noticias", headers=self.headers, params={"search": "Orden prueba 153", "sort": "newest"}
+            ).json()["items"]
+            oldest = self.client.get(
+                "/api/noticias", headers=self.headers, params={"search": "Orden prueba 153", "sort": "oldest"}
+            ).json()["items"]
+            important = self.client.get(
+                "/api/noticias", headers=self.headers, params={"search": "Orden prueba 153", "sort": "priority_desc"}
+            ).json()["items"]
+            self.assertEqual(newest[0]["id"], recent["id"])
+            self.assertEqual(oldest[0]["id"], old["id"])
+            self.assertEqual(important[0]["priority"], "Urgente")
+        finally:
+            with main.connection() as db:
+                db.execute("DELETE FROM noticias WHERE id IN (?, ?)", (recent["id"], old["id"]))
+
     def test_automations_permissions_execution_and_alerts(self):
         jobs = self.client.get("/api/automatizaciones", headers=self.headers)
         self.assertEqual(jobs.status_code, 200)
-        self.assertEqual({item["key"] for item in jobs.json()}, {"facebook", "radar", "geolocation", "backup"})
+        self.assertEqual({item["key"] for item in jobs.json()}, {"facebook", "radar", "geolocation", "backup", "cleanup"})
+        cleanup = next(item for item in jobs.json() if item["key"] == "cleanup")
+        self.assertTrue(cleanup["enabled"])
+        self.assertEqual(cleanup["interval_minutes"], 1440)
 
         created = self.client.post(
             "/api/usuarios",

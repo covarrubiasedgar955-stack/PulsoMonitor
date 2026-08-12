@@ -127,6 +127,7 @@ export default function NewsPage() {
   const [status, setStatus] = useState("");
   const [priority, setPriority] = useState("");
   const [municipality, setMunicipality] = useState("");
+  const [sort, setSort] = useState("newest");
   const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -139,7 +140,7 @@ export default function NewsPage() {
     setLoading(true);
     setError("");
     try {
-      const response = await api.listNews({ search, status, priority, municipality, limit: pageSize, offset: (page - 1) * pageSize });
+      const response = await api.listNews({ search, status, priority, municipality, sort, limit: pageSize, offset: (page - 1) * pageSize });
       setItems(response.items);
       setTotal(response.total);
     } catch (caught) {
@@ -147,7 +148,7 @@ export default function NewsPage() {
     } finally {
       setLoading(false);
     }
-  }, [municipality, page, priority, search, status]);
+  }, [municipality, page, priority, search, sort, status]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -192,6 +193,7 @@ export default function NewsPage() {
           <select aria-label="Filtrar por municipio" value={municipality} onChange={(event) => { setMunicipality(event.target.value); setPage(1); }}><option value="">Todos los municipios</option>{municipalities.map((value) => <option key={value.id} value={value.name}>{value.name}</option>)}</select>
           <select aria-label="Filtrar por estado" value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }}><option value="">Todos los estados</option>{statuses.map((value) => <option key={value}>{value}</option>)}</select>
           <select aria-label="Filtrar por prioridad" value={priority} onChange={(event) => { setPriority(event.target.value); setPage(1); }}><option value="">Todas las prioridades</option>{priorities.map((value) => <option key={value}>{value}</option>)}</select>
+          <select aria-label="Ordenar noticias" value={sort} onChange={(event) => { setSort(event.target.value); setPage(1); }}><option value="newest">Más recientes primero</option><option value="oldest">Más antiguas primero</option><option value="priority_desc">Mayor importancia</option><option value="priority_asc">Menor importancia</option></select>
           <button className="button secondary" onClick={load}>Actualizar</button>
         </div>
 
@@ -208,7 +210,7 @@ export default function NewsPage() {
                   <td><span className="tag">{item.category}</span></td>
                   <td><span className={`priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span></td>
                   <td><span className={statusClass(item.status)}>{item.status}</span></td>
-                  <td>{dateTime(item.created_at)}</td>
+                  <td>{dateTime(item.published_at || item.created_at)}</td>
                   <td><div className="row-actions"><button disabled={lockedByFacebook} onClick={() => edit(item)} title={lockedByFacebook ? "La noticia ya está enviada a Facebook" : "Editar"}>Editar</button><button disabled={lockedByFacebook} className="danger" onClick={() => remove(item)} title={lockedByFacebook ? "La noticia se conserva como historial" : "Eliminar"}>Eliminar</button></div></td>
                 </tr>
               })}
