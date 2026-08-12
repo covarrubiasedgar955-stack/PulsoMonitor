@@ -46,7 +46,7 @@ TOKEN_TTL_SECONDS = 12 * 60 * 60
 GEOCODER_URL = os.getenv("PULSO_GEOCODER_URL", "https://nominatim.openstreetmap.org/search").strip()
 GEOCODER_USER_AGENT = os.getenv(
     "PULSO_GEOCODER_USER_AGENT",
-    "PulsoMonitor/1.2 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
+    "PulsoMonitor/1.3 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
 ).strip()
 GEOCODER_LOCK = threading.Lock()
 GEOCODER_LAST_REQUEST = 0.0
@@ -122,6 +122,7 @@ def init_database() -> None:
                 tags TEXT NOT NULL DEFAULT '[]',
                 facebook_post_id TEXT NOT NULL DEFAULT '',
                 scheduled_at TEXT,
+                planned_at TEXT,
                 location TEXT NOT NULL DEFAULT '',
                 latitude REAL,
                 longitude REAL,
@@ -136,6 +137,8 @@ def init_database() -> None:
             db.execute("ALTER TABLE noticias ADD COLUMN facebook_post_id TEXT NOT NULL DEFAULT ''")
         if "scheduled_at" not in news_columns:
             db.execute("ALTER TABLE noticias ADD COLUMN scheduled_at TEXT")
+        if "planned_at" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN planned_at TEXT")
         if "location" not in news_columns:
             db.execute("ALTER TABLE noticias ADD COLUMN location TEXT NOT NULL DEFAULT ''")
         if "latitude" not in news_columns:
@@ -151,6 +154,7 @@ def init_database() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_status ON noticias(status)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_created ON noticias(created_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_scheduled ON noticias(scheduled_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_planned ON noticias(planned_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_location ON noticias(latitude, longitude)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_location_review ON noticias(location_reviewed, location_source)")
         db.execute(
@@ -596,6 +600,7 @@ class NewsItem(NewsPayload):
     updated_at: str
     facebook_post_id: str = ""
     scheduled_at: str | None = None
+    planned_at: str | None = None
     location_source: str = ""
     location_confidence: int = Field(default=0, ge=0, le=100)
     location_reviewed: bool = False
@@ -663,6 +668,42 @@ class NewsStats(BaseModel):
     published: int
     urgent: int
     total: int
+
+
+class CalendarItem(BaseModel):
+    id: int
+    title: str
+    summary: str
+    municipality: str
+    category: str
+    priority: NewsPriority
+    status: NewsStatus
+    event_at: str
+    date_source: Literal["planned", "scheduled", "published", "created"]
+    planned_at: str | None = None
+    scheduled_at: str | None = None
+    published_at: str | None = None
+    facebook_post_id: str = ""
+
+
+class CalendarResponse(BaseModel):
+    items: list[CalendarItem]
+    total: int
+    pending: int
+    scheduled: int
+    published: int
+    urgent: int
+
+
+class CalendarPlanRequest(BaseModel):
+    planned_at: datetime | None = None
+
+    @field_validator("planned_at")
+    @classmethod
+    def plan_has_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("La fecha editorial debe incluir zona horaria.")
+        return value
 
 
 class AnalyticsPoint(BaseModel):
@@ -1741,8 +1782,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.2.0",
-    description="API local para administrar noticias, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
+    version="1.3.0",
+    description="API local para administrar noticias, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -1760,7 +1801,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.2.0"}
+    return {"status": "ok", "version": "1.3.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -2788,6 +2829,95 @@ def export_analytics_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/calendario", response_model=CalendarResponse)
+def editorial_calendar(
+    _: Annotated[AuthenticatedUser, Depends(current_user)],
+    start: datetime,
+    end: datetime,
+) -> CalendarResponse:
+    if start.tzinfo is None or end.tzinfo is None:
+        raise HTTPException(status_code=422, detail="Las fechas del calendario deben incluir zona horaria.")
+    start_utc = start.astimezone(timezone.utc)
+    end_utc = end.astimezone(timezone.utc)
+    if end_utc <= start_utc:
+        raise HTTPException(status_code=400, detail="El final del calendario debe ser posterior al inicio.")
+    if end_utc - start_utc > timedelta(days=62):
+        raise HTTPException(status_code=400, detail="Consulta como máximo 62 días por operación.")
+    event_expression = """
+        CASE
+            WHEN status = 'Programada' AND scheduled_at IS NOT NULL THEN scheduled_at
+            WHEN status = 'Publicada' AND published_at IS NOT NULL THEN published_at
+            WHEN planned_at IS NOT NULL THEN planned_at
+            ELSE created_at
+        END
+    """
+    start_iso = start_utc.isoformat(timespec="seconds")
+    end_iso = end_utc.isoformat(timespec="seconds")
+    with connection() as db:
+        rows = db.execute(
+            f"""
+            SELECT id, title, summary, municipality, category, priority, status,
+                   planned_at, scheduled_at, published_at, facebook_post_id,
+                   {event_expression} AS event_at,
+                   CASE
+                       WHEN status = 'Programada' AND scheduled_at IS NOT NULL THEN 'scheduled'
+                       WHEN status = 'Publicada' AND published_at IS NOT NULL THEN 'published'
+                       WHEN planned_at IS NOT NULL THEN 'planned'
+                       ELSE 'created'
+                   END AS date_source
+            FROM noticias
+            WHERE status != 'Archivada'
+              AND {event_expression} >= ? AND {event_expression} < ?
+            ORDER BY event_at, CASE priority WHEN 'Urgente' THEN 0 WHEN 'Alta' THEN 1 ELSE 2 END, id
+            """,
+            (start_iso, end_iso),
+        ).fetchall()
+    items = [CalendarItem(**dict(row)) for row in rows]
+    return CalendarResponse(
+        items=items,
+        total=len(items),
+        pending=sum(item.status in ("Pendiente", "En revisión") for item in items),
+        scheduled=sum(item.status == "Programada" for item in items),
+        published=sum(item.status == "Publicada" for item in items),
+        urgent=sum(item.priority == "Urgente" for item in items),
+    )
+
+
+@app.put("/api/noticias/{news_id}/plan-editorial", response_model=NewsItem)
+def set_editorial_plan(
+    news_id: int,
+    payload: CalendarPlanRequest,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> NewsItem:
+    planned_at: str | None = None
+    if payload.planned_at is not None:
+        planned = payload.planned_at.astimezone(timezone.utc)
+        if planned > datetime.now(timezone.utc) + timedelta(days=365):
+            raise HTTPException(status_code=400, detail="La planeación editorial admite hasta un año de anticipación.")
+        planned_at = planned.isoformat(timespec="seconds")
+    with connection() as db:
+        current = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="La noticia no existe.")
+        if current["status"] == "Archivada":
+            raise HTTPException(status_code=409, detail="Una noticia archivada no puede agregarse al calendario.")
+        if current["facebook_post_id"]:
+            raise HTTPException(status_code=409, detail="La fecha administrada por Facebook no puede modificarse desde el calendario editorial.")
+        db.execute(
+            "UPDATE noticias SET planned_at = ?, updated_at = ? WHERE id = ?",
+            (planned_at, utc_now(), news_id),
+        )
+        updated = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    audit(
+        user,
+        "Actualizó plan editorial" if planned_at else "Retiró del plan editorial",
+        "noticia",
+        news_id,
+        str(updated["title"]),
+    )
+    return row_to_news(updated)
 
 
 @app.get("/api/noticias", response_model=NewsList)
