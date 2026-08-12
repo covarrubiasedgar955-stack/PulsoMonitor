@@ -6,6 +6,7 @@ export type NewsStatus =
   | "Archivada";
 
 export type NewsPriority = "Baja" | "Media" | "Alta" | "Urgente";
+export type EditorialState = "Borrador" | "En revisión" | "Aprobada" | "Cambios solicitados";
 
 export interface NewsItem {
   id: number;
@@ -28,6 +29,12 @@ export interface NewsItem {
   facebook_post_id: string;
   scheduled_at: string | null;
   planned_at: string | null;
+  editorial_state: EditorialState;
+  assigned_to: number | null;
+  review_note: string;
+  review_requested_at: string | null;
+  approved_at: string | null;
+  approved_by: number | null;
   location: string;
   latitude: number | null;
   longitude: number | null;
@@ -39,8 +46,25 @@ export interface NewsItem {
 export type NewsInput = Omit<
   NewsItem,
   "id" | "created_at" | "updated_at" | "facebook_post_id" | "scheduled_at" | "planned_at" |
+  "editorial_state" | "assigned_to" | "review_note" | "review_requested_at" | "approved_at" | "approved_by" |
   "location_source" | "location_confidence" | "location_reviewed"
 >;
+
+export interface EditorialItem extends NewsItem {
+  assigned_name: string;
+  approved_by_name: string;
+}
+
+export interface EditorialBoard {
+  items: EditorialItem[];
+  total: number;
+  drafts: number;
+  review: number;
+  approved: number;
+  changes: number;
+}
+
+export type EditorialAction = "assign" | "request_review" | "approve" | "request_changes" | "reopen";
 
 export interface NewsStats {
   today: number;
