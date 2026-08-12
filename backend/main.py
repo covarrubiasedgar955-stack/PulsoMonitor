@@ -57,6 +57,7 @@ AUTOMATION_THREAD: threading.Thread | None = None
 NewsStatus = Literal["Pendiente", "En revisión", "Programada", "Publicada", "Archivada"]
 NewsPriority = Literal["Baja", "Media", "Alta", "Urgente"]
 EditorialState = Literal["Borrador", "En revisión", "Aprobada", "Cambios solicitados"]
+NewsSort = Literal["newest", "oldest", "priority_desc", "priority_asc"]
 AICategory = Literal["General", "Seguridad", "Política", "Deportes", "Eventos", "Turismo", "Servicios", "Comunidad"]
 AITone = Literal["Informativo", "Urgente", "Institucional", "Cercano"]
 UserRole = Literal["Administrador", "Editor", "Reportero"]
@@ -64,6 +65,22 @@ UserRole = Literal["Administrador", "Editor", "Reportero"]
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def news_order_clause(sort: NewsSort, prefix: str = "") -> str:
+    def column(name: str) -> str:
+        return f"{prefix}{name}"
+
+    source_date = f"COALESCE({column('published_at')}, {column('created_at')})"
+    priority = column("priority")
+    news_id = column("id")
+    if sort == "oldest":
+        return f"{source_date} ASC, {news_id} ASC"
+    if sort == "priority_desc":
+        return f"CASE {priority} WHEN 'Urgente' THEN 0 WHEN 'Alta' THEN 1 WHEN 'Media' THEN 2 ELSE 3 END, {source_date} DESC, {news_id} DESC"
+    if sort == "priority_asc":
+        return f"CASE {priority} WHEN 'Baja' THEN 0 WHEN 'Media' THEN 1 WHEN 'Alta' THEN 2 ELSE 3 END, {source_date} DESC, {news_id} DESC"
+    return f"{source_date} DESC, {news_id} DESC"
 
 
 def connection() -> sqlite3.Connection:
@@ -265,18 +282,19 @@ def init_database() -> None:
             """
         )
         automation_defaults = (
-            ("facebook", "Facebook", "Busca publicaciones nuevas en la página conectada.", 30),
-            ("radar", "Radar", "Consulta todas las fuentes RSS o Atom activas.", 30),
-            ("geolocation", "Geolocalización", "Intenta ubicar noticias pendientes de forma supervisada.", 15),
-            ("backup", "Respaldos", "Crea una copia local de la base de datos.", 1440),
+            ("facebook", "Facebook", "Busca publicaciones nuevas en la página conectada.", 0, 30),
+            ("radar", "Radar", "Consulta todas las fuentes RSS o Atom activas.", 0, 30),
+            ("geolocation", "Geolocalización", "Intenta ubicar noticias pendientes de forma supervisada.", 0, 15),
+            ("backup", "Respaldos", "Crea una copia local de la base de datos.", 0, 1440),
+            ("cleanup", "Limpieza editorial", "Elimina noticias no utilizadas siete días después de su fecha de origen.", 1, 1440),
         )
         db.executemany(
             """
             INSERT OR IGNORE INTO automation_jobs (
                 key, label, description, enabled, interval_minutes, last_status, updated_at
-            ) VALUES (?, ?, ?, 0, ?, 'idle', ?)
+            ) VALUES (?, ?, ?, ?, ?, 'idle', ?)
             """,
-            [(key, label, description, interval, utc_now()) for key, label, description, interval in automation_defaults],
+            [(key, label, description, enabled, interval, utc_now()) for key, label, description, enabled, interval in automation_defaults],
         )
         db.execute(
             """
@@ -565,7 +583,7 @@ class BackupInfo(BaseModel):
     created_at: str
 
 
-AutomationKey = Literal["facebook", "radar", "geolocation", "backup"]
+AutomationKey = Literal["facebook", "radar", "geolocation", "backup", "cleanup"]
 
 
 class AutomationJob(BaseModel):
@@ -1860,6 +1878,24 @@ def geolocate_automation_batch(limit: int = 20) -> str:
     )
 
 
+def cleanup_unused_news(days: int = 7) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    predicate = """
+        status NOT IN ('Publicada', 'Programada')
+        AND editorial_state != 'Aprobada'
+        AND COALESCE(facebook_post_id, '') = ''
+        AND datetime(COALESCE(published_at, created_at)) < datetime(?)
+    """
+    with connection() as db:
+        total = int(db.execute(f"SELECT COUNT(*) FROM noticias WHERE {predicate}", (cutoff,)).fetchone()[0])
+    if total == 0:
+        return 0
+    create_database_backup()
+    with connection() as db:
+        cursor = db.execute(f"DELETE FROM noticias WHERE {predicate}", (cutoff,))
+    return int(cursor.rowcount)
+
+
 def run_automation_job(key: AutomationKey, scheduled: bool = False) -> AutomationJob:
     with AUTOMATION_LOCK:
         with connection() as db:
@@ -1892,10 +1928,14 @@ def run_automation_job(key: AutomationKey, scheduled: bool = False) -> Automatio
             elif key == "geolocation":
                 message = geolocate_automation_batch()
                 should_notify = not message.startswith("0 analizadas")
-            else:
+            elif key == "backup":
                 created = create_database_backup()
                 message = f"Respaldo creado: {created.name} ({created.size} bytes)."
                 should_notify = True
+            else:
+                deleted = cleanup_unused_news()
+                message = f"{deleted} noticias vencidas eliminadas. Las publicadas, programadas y aprobadas se conservaron."
+                should_notify = deleted > 0
             final_status: Literal["success", "error"] = "success"
         except Exception as error:
             detail = error.detail if isinstance(error, HTTPException) else str(error)
@@ -2208,7 +2248,7 @@ def list_automations(user: Annotated[AuthenticatedUser, Depends(current_user)]) 
             """
             SELECT * FROM automation_jobs
             ORDER BY CASE key WHEN 'facebook' THEN 1 WHEN 'radar' THEN 2
-                     WHEN 'geolocation' THEN 3 ELSE 4 END
+                     WHEN 'geolocation' THEN 3 WHEN 'backup' THEN 4 ELSE 5 END
             """
         ).fetchall()
     return [row_to_automation(row) for row in rows]
@@ -3115,6 +3155,7 @@ def editorial_board(
     state: str = "",
     assigned_to: int | None = None,
     municipality: str = "",
+    sort: NewsSort = "newest",
 ) -> EditorialBoard:
     clauses = ["n.status != 'Archivada'"]
     values: list[object] = []
@@ -3137,11 +3178,7 @@ def editorial_board(
             LEFT JOIN users u ON u.id = n.assigned_to
             LEFT JOIN users a ON a.id = n.approved_by
             WHERE {where}
-            ORDER BY
-                CASE n.editorial_state WHEN 'Cambios solicitados' THEN 0 WHEN 'En revisión' THEN 1
-                     WHEN 'Borrador' THEN 2 ELSE 3 END,
-                CASE n.priority WHEN 'Urgente' THEN 0 WHEN 'Alta' THEN 1 WHEN 'Media' THEN 2 ELSE 3 END,
-                COALESCE(n.review_requested_at, n.updated_at) DESC
+            ORDER BY {news_order_clause(sort, 'n.')}
             """,
             values,
         ).fetchall()
@@ -3254,6 +3291,7 @@ def list_news(
     priority: str = "",
     category: str = "",
     municipality: str = "",
+    sort: NewsSort = "newest",
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> NewsList:
@@ -3279,7 +3317,7 @@ def list_news(
     with connection() as db:
         total = db.execute(f"SELECT COUNT(*) FROM noticias{where}", values).fetchone()[0]
         rows = db.execute(
-            f"SELECT * FROM noticias{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM noticias{where} ORDER BY {news_order_clause(sort)} LIMIT ? OFFSET ?",
             [*values, limit, offset],
         ).fetchall()
     return NewsList(items=[row_to_news(row) for row in rows], total=total)
