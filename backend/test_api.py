@@ -215,6 +215,29 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(board.status_code, 200)
         self.assertTrue(any(item["id"] == news["id"] for item in board.json()["items"]))
 
+    def test_editorial_board_tolerates_legacy_oversized_titles(self):
+        news = self.client.get("/api/noticias?limit=1", headers=self.headers).json()["items"][0]
+        oversized_title = "Noticia importada " + ("muy extensa " * 30)
+        with main.connection() as db:
+            original_title = db.execute(
+                "SELECT title FROM noticias WHERE id = ?", (news["id"],)
+            ).fetchone()["title"]
+            db.execute(
+                "UPDATE noticias SET title = ? WHERE id = ?",
+                (oversized_title, news["id"]),
+            )
+        try:
+            board = self.client.get("/api/flujo-editorial", headers=self.headers)
+            self.assertEqual(board.status_code, 200)
+            item = next(entry for entry in board.json()["items"] if entry["id"] == news["id"])
+            self.assertLessEqual(len(item["title"]), 180)
+        finally:
+            with main.connection() as db:
+                db.execute(
+                    "UPDATE noticias SET title = ? WHERE id = ?",
+                    (original_title, news["id"]),
+                )
+
     def test_automations_permissions_execution_and_alerts(self):
         jobs = self.client.get("/api/automatizaciones", headers=self.headers)
         self.assertEqual(jobs.status_code, 200)
