@@ -69,9 +69,7 @@ def utc_now() -> str:
 
 
 def news_order_clause(sort: NewsSort, prefix: str = "") -> str:
-    def column(name: str) -> str:
-        return f"{prefix}{name}"
-
+    column = lambda name: f"{prefix}{name}"
     source_date = f"COALESCE({column('published_at')}, {column('created_at')})"
     priority = column("priority")
     news_id = column("id")
@@ -286,7 +284,7 @@ def init_database() -> None:
             ("facebook", "Facebook", "Busca publicaciones nuevas en la página conectada.", 0, 30),
             ("radar", "Radar", "Consulta todas las fuentes RSS o Atom activas.", 0, 30),
             ("geolocation", "Geolocalización", "Intenta ubicar noticias pendientes de forma supervisada.", 0, 15),
-            ("images", "Recuperar imágenes", "Completa las imágenes faltantes desde Facebook, Radar o la fuente original.", 1, 1440),
+            ("images", "Recuperar imágenes", "Completa imágenes faltantes y descarta logotipos o portadas genéricas.", 1, 1440),
             ("backup", "Respaldos", "Crea una copia local de la base de datos.", 0, 1440),
             ("cleanup", "Limpieza editorial", "Elimina noticias no utilizadas siete días después de su fecha de origen.", 1, 1440),
         )
@@ -1963,8 +1961,45 @@ def cleanup_unused_news(days: int = 7) -> int:
     return int(cursor.rowcount)
 
 
-def backfill_news_images(limit: int = 40) -> tuple[int, int]:
-    """Recover images for existing news without replacing editorial choices."""
+GENERIC_IMAGE_HINTS = (
+    "favicon", "placeholder", "no-image", "no_image", "sin-imagen", "sin_imagen",
+    "default-image", "default_image", "site-logo", "site_logo", "brand-logo", "brand_logo",
+)
+
+
+def looks_generic_news_image(image_url: str) -> bool:
+    lowered = unescape(str(image_url or "")).lower()
+    if not lowered:
+        return True
+    path = urlparse(lowered).path
+    filename = path.rsplit("/", 1)[-1]
+    return any(hint in lowered for hint in GENERIC_IMAGE_HINTS) or filename.startswith(("logo.", "logo-", "logo_", "icon."))
+
+
+def backfill_news_images(limit: int = 40) -> tuple[int, int, int]:
+    """Recover useful images and remove repeated generic covers."""
+    with connection() as db:
+        repeated = {
+            row["image_url"] for row in db.execute(
+                """SELECT image_url FROM noticias
+                WHERE TRIM(COALESCE(image_url, '')) != ''
+                GROUP BY image_url HAVING COUNT(*) >= 3"""
+            ).fetchall()
+        }
+        generic_rows = db.execute(
+            "SELECT id, image_url FROM noticias WHERE TRIM(COALESCE(image_url, '')) != ''"
+        ).fetchall()
+        discard_ids = [
+            row["id"] for row in generic_rows
+            if row["image_url"] in repeated or looks_generic_news_image(row["image_url"])
+        ]
+        if discard_ids:
+            placeholders = ",".join("?" for _ in discard_ids)
+            db.execute(
+                f"UPDATE noticias SET image_url = '', updated_at = ? WHERE id IN ({placeholders})",
+                (utc_now(), *discard_ids),
+            )
+
     with connection() as db:
         rows = db.execute(
             """
@@ -1990,8 +2025,12 @@ def backfill_news_images(limit: int = 40) -> tuple[int, int]:
     recovered = 0
     for row in rows:
         image_url = valid_public_image_url(row["facebook_image"]) or valid_public_image_url(row["radar_image"])
+        if image_url in repeated or looks_generic_news_image(image_url):
+            image_url = ""
         if not image_url and row["url"]:
             image_url = fetch_open_graph_image(row["url"])
+            if image_url in repeated or looks_generic_news_image(image_url):
+                image_url = ""
         if not image_url:
             continue
         with connection() as db:
@@ -2000,7 +2039,8 @@ def backfill_news_images(limit: int = 40) -> tuple[int, int]:
                 (image_url, utc_now(), row["id"]),
             )
             recovered += int(cursor.rowcount)
-    return len(rows), recovered
+    return len(rows), recovered, len(discard_ids)
+
 
 def run_automation_job(key: AutomationKey, scheduled: bool = False) -> AutomationJob:
     with AUTOMATION_LOCK:
@@ -2035,9 +2075,9 @@ def run_automation_job(key: AutomationKey, scheduled: bool = False) -> Automatio
                 message = geolocate_automation_batch()
                 should_notify = not message.startswith("0 analizadas")
             elif key == "images":
-                checked, recovered = backfill_news_images()
-                message = f"{checked} noticias revisadas · {recovered} imágenes recuperadas."
-                should_notify = recovered > 0
+                checked, recovered, discarded = backfill_news_images()
+                message = f"{checked} noticias revisadas · {recovered} imágenes recuperadas · {discarded} genéricas descartadas."
+                should_notify = recovered > 0 or discarded > 0
             elif key == "backup":
                 created = create_database_backup()
                 message = f"Respaldo creado: {created.name} ({created.size} bytes)."

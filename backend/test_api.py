@@ -351,15 +351,41 @@ class PulsoMonitorApiTests(unittest.TestCase):
             with patch.object(main, "valid_public_image_url", side_effect=lambda value, base_url="": value or ""), patch.object(
                 main, "fetch_open_graph_image", return_value=""
             ):
-                checked, recovered = main.backfill_news_images(limit=200)
+                checked, recovered, discarded = main.backfill_news_images(limit=200)
             self.assertGreaterEqual(checked, 1)
             self.assertGreaterEqual(recovered, 1)
+            self.assertGreaterEqual(discarded, 0)
             updated = self.client.get(f"/api/noticias/{news['id']}", headers=self.headers).json()
             self.assertEqual(updated["image_url"], "https://images.example.org/portada.jpg")
         finally:
             with main.connection() as db:
                 db.execute("DELETE FROM facebook_posts WHERE external_id = ?", (external_id,))
                 db.execute("DELETE FROM noticias WHERE id = ?", (news["id"],))
+
+    def test_image_backfill_discards_repeated_generic_cover(self):
+        ids = []
+        try:
+            for index in range(3):
+                payload = {
+                    "title": f"Portada genérica 157 {index}", "summary": "Contenido", "content": "Texto",
+                    "source": "Radar", "author": "Pulso", "municipality": "Tequila", "category": "General",
+                    "priority": "Media", "status": "Pendiente",
+                    "image_url": "https://example.org/assets/portada-repetida.jpg", "url": "",
+                    "published_at": datetime.now(timezone.utc).isoformat(), "is_ai": False, "tags": ["imagen-157"],
+                }
+                ids.append(self.client.post("/api/noticias", headers=self.headers, json=payload).json()["id"])
+            with patch.object(main, "fetch_open_graph_image", return_value=""):
+                _, _, discarded = main.backfill_news_images(limit=200)
+            self.assertGreaterEqual(discarded, 3)
+            with main.connection() as db:
+                values = db.execute(
+                    f"SELECT image_url FROM noticias WHERE id IN ({','.join('?' for _ in ids)})", ids
+                ).fetchall()
+            self.assertTrue(all(not row["image_url"] for row in values))
+        finally:
+            if ids:
+                with main.connection() as db:
+                    db.execute(f"DELETE FROM noticias WHERE id IN ({','.join('?' for _ in ids)})", ids)
 
     def test_news_can_be_sorted_by_source_date_and_priority(self):
         base = {
