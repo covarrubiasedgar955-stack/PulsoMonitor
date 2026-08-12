@@ -134,7 +134,7 @@ export default function PublicationsPage() {
     return () => window.clearTimeout(timer);
   }, [load]);
 
-  const ready = items.filter((item) => !item.facebook_post_id && ["Pendiente", "En revisión", "Programada"].includes(item.status));
+  const ready = items.filter((item) => !item.facebook_post_id && item.editorial_state === "Aprobada" && ["Pendiente", "En revisión", "Programada"].includes(item.status));
   const scheduled = items.filter((item) => item.status === "Programada" && Boolean(item.facebook_post_id));
   const published = items.filter((item) => item.status === "Publicada");
   const visible = tab === "ready" ? ready : tab === "scheduled" ? scheduled : tab === "published" ? published : items.filter((item) => item.status !== "Archivada");
@@ -165,7 +165,7 @@ export default function PublicationsPage() {
     <main>
       <div className="page-heading">
         <div><p className="eyebrow">FASE 6 · DISTRIBUCIÓN</p><h1>Publicaciones</h1><p>Aprueba, programa y publica las noticias de Pulso Tequila.</p></div>
-        <Link href="/noticias" className="button secondary">Revisar Noticias</Link>
+        <Link href="/revision" className="button secondary">Revisión editorial</Link>
       </div>
 
       {!loading && !facebook?.connected && <div className="alert error">Primero conecta tu página en <Link href="/facebook">Facebook →</Link></div>}
@@ -174,7 +174,7 @@ export default function PublicationsPage() {
       {message && <div className="alert success">{message}</div>}
 
       <section className="stats-grid publication-stats" aria-label="Estado de publicaciones">
-        <article className="stat-card"><div className="stat-icon orange">◷</div><div><span>Listas para revisar</span><strong>{ready.length}</strong><small>requieren tu aprobación</small></div></article>
+        <article className="stat-card"><div className="stat-icon orange">◷</div><div><span>Aprobadas</span><strong>{ready.length}</strong><small>listas para publicar</small></div></article>
         <article className="stat-card"><div className="stat-icon blue">◫</div><div><span>Programadas</span><strong>{scheduled.length}</strong><small>administradas por Meta</small></div></article>
         <article className="stat-card"><div className="stat-icon green">✓</div><div><span>Publicadas</span><strong>{published.length}</strong><small>historial editorial</small></div></article>
       </section>
@@ -184,7 +184,7 @@ export default function PublicationsPage() {
         <div className="publication-list">
           {visible.map((item) => {
             const isScheduled = item.status === "Programada" && Boolean(item.facebook_post_id);
-            const canPublish = !item.facebook_post_id && ["Pendiente", "En revisión", "Programada"].includes(item.status);
+            const canPublish = !item.facebook_post_id && item.editorial_state === "Aprobada" && ["Pendiente", "En revisión", "Programada"].includes(item.status);
             return (
               <article className="publication-card" key={item.id}>
                 <div className="publication-card-main"><div><span className={statusClass(item.status)}>{item.status}</span><span className="tag">{item.category}</span></div><h3>{item.title}</h3><p>{item.summary || item.content}</p><small>{item.source} · {item.municipality}</small></div>
