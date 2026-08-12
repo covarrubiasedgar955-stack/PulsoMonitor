@@ -46,7 +46,7 @@ TOKEN_TTL_SECONDS = 12 * 60 * 60
 GEOCODER_URL = os.getenv("PULSO_GEOCODER_URL", "https://nominatim.openstreetmap.org/search").strip()
 GEOCODER_USER_AGENT = os.getenv(
     "PULSO_GEOCODER_USER_AGENT",
-    "PulsoMonitor/1.3 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
+    "PulsoMonitor/1.4 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
 ).strip()
 GEOCODER_LOCK = threading.Lock()
 GEOCODER_LAST_REQUEST = 0.0
@@ -56,6 +56,7 @@ AUTOMATION_THREAD: threading.Thread | None = None
 
 NewsStatus = Literal["Pendiente", "En revisión", "Programada", "Publicada", "Archivada"]
 NewsPriority = Literal["Baja", "Media", "Alta", "Urgente"]
+EditorialState = Literal["Borrador", "En revisión", "Aprobada", "Cambios solicitados"]
 AICategory = Literal["General", "Seguridad", "Política", "Deportes", "Eventos", "Turismo", "Servicios", "Comunidad"]
 AITone = Literal["Informativo", "Urgente", "Institucional", "Cercano"]
 UserRole = Literal["Administrador", "Editor", "Reportero"]
@@ -123,6 +124,12 @@ def init_database() -> None:
                 facebook_post_id TEXT NOT NULL DEFAULT '',
                 scheduled_at TEXT,
                 planned_at TEXT,
+                editorial_state TEXT NOT NULL DEFAULT 'Borrador',
+                assigned_to INTEGER,
+                review_note TEXT NOT NULL DEFAULT '',
+                review_requested_at TEXT,
+                approved_at TEXT,
+                approved_by INTEGER,
                 location TEXT NOT NULL DEFAULT '',
                 latitude REAL,
                 longitude REAL,
@@ -139,6 +146,24 @@ def init_database() -> None:
             db.execute("ALTER TABLE noticias ADD COLUMN scheduled_at TEXT")
         if "planned_at" not in news_columns:
             db.execute("ALTER TABLE noticias ADD COLUMN planned_at TEXT")
+        if "editorial_state" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN editorial_state TEXT NOT NULL DEFAULT 'Borrador'")
+            db.execute("""
+                UPDATE noticias SET editorial_state = CASE
+                    WHEN status IN ('Programada', 'Publicada') THEN 'Aprobada'
+                    WHEN status = 'En revisión' THEN 'En revisión'
+                    ELSE 'Borrador' END
+            """)
+        if "assigned_to" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN assigned_to INTEGER")
+        if "review_note" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN review_note TEXT NOT NULL DEFAULT ''")
+        if "review_requested_at" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN review_requested_at TEXT")
+        if "approved_at" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN approved_at TEXT")
+        if "approved_by" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN approved_by INTEGER")
         if "location" not in news_columns:
             db.execute("ALTER TABLE noticias ADD COLUMN location TEXT NOT NULL DEFAULT ''")
         if "latitude" not in news_columns:
@@ -155,6 +180,7 @@ def init_database() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_created ON noticias(created_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_scheduled ON noticias(scheduled_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_planned ON noticias(planned_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_editorial ON noticias(editorial_state, assigned_to)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_location ON noticias(latitude, longitude)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_noticias_location_review ON noticias(location_reviewed, location_source)")
         db.execute(
@@ -439,6 +465,8 @@ def seed_database(db: sqlite3.Connection) -> None:
         """,
         samples,
     )
+    db.execute("UPDATE noticias SET editorial_state = 'Aprobada', approved_at = ? WHERE status IN ('Programada', 'Publicada')", (now,))
+    db.execute("UPDATE noticias SET editorial_state = 'En revisión', review_requested_at = ? WHERE status = 'En revisión'", (now,))
 
 
 class LoginRequest(BaseModel):
@@ -601,6 +629,12 @@ class NewsItem(NewsPayload):
     facebook_post_id: str = ""
     scheduled_at: str | None = None
     planned_at: str | None = None
+    editorial_state: EditorialState = "Borrador"
+    assigned_to: int | None = None
+    review_note: str = ""
+    review_requested_at: str | None = None
+    approved_at: str | None = None
+    approved_by: int | None = None
     location_source: str = ""
     location_confidence: int = Field(default=0, ge=0, le=100)
     location_reviewed: bool = False
@@ -610,6 +644,31 @@ class NewsLocationRequest(BaseModel):
     location: str = Field(default="", max_length=180)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
+
+
+class EditorialItem(NewsItem):
+    assigned_name: str = "Sin asignar"
+    approved_by_name: str = ""
+
+
+class EditorialBoard(BaseModel):
+    items: list[EditorialItem]
+    total: int
+    drafts: int
+    review: int
+    approved: int
+    changes: int
+
+
+class EditorialUpdateRequest(BaseModel):
+    action: Literal["assign", "request_review", "approve", "request_changes", "reopen"]
+    assigned_to: int | None = None
+    note: str = Field(default="", max_length=800)
+
+    @field_validator("note")
+    @classmethod
+    def clean_note(cls, value: str) -> str:
+        return value.strip()
 
 
 class MapIncident(BaseModel):
@@ -1782,8 +1841,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.3.0",
-    description="API local para administrar noticias, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
+    version="1.4.0",
+    description="API local para administrar noticias, revisión editorial, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -1801,7 +1860,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.3.0"}
+    return {"status": "ok", "version": "1.4.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -1842,6 +1901,15 @@ def list_users(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> lis
             """
         ).fetchall()
     return [row_to_user(row) for row in rows]
+
+
+@app.get("/api/equipo-editorial", response_model=list[UserInfo])
+def editorial_team(_: Annotated[AuthenticatedUser, Depends(current_user)]) -> list[UserInfo]:
+    with connection() as db:
+        rows = db.execute(
+            "SELECT id, username, name, role FROM users WHERE active = 1 ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+    return [UserInfo(**dict(row)) for row in rows]
 
 
 @app.post("/api/usuarios", response_model=UserRecord, status_code=status.HTTP_201_CREATED)
@@ -2920,6 +2988,138 @@ def set_editorial_plan(
     return row_to_news(updated)
 
 
+@app.get("/api/flujo-editorial", response_model=EditorialBoard)
+def editorial_board(
+    _: Annotated[AuthenticatedUser, Depends(current_user)],
+    state: str = "",
+    assigned_to: int | None = None,
+) -> EditorialBoard:
+    clauses = ["n.status != 'Archivada'"]
+    values: list[object] = []
+    if state:
+        clauses.append("n.editorial_state = ?")
+        values.append(state)
+    if assigned_to is not None:
+        clauses.append("n.assigned_to = ?")
+        values.append(assigned_to)
+    where = " AND ".join(clauses)
+    with connection() as db:
+        rows = db.execute(
+            f"""
+            SELECT n.*, COALESCE(u.name, 'Sin asignar') AS assigned_name,
+                   COALESCE(a.name, '') AS approved_by_name
+            FROM noticias n
+            LEFT JOIN users u ON u.id = n.assigned_to
+            LEFT JOIN users a ON a.id = n.approved_by
+            WHERE {where}
+            ORDER BY
+                CASE n.editorial_state WHEN 'Cambios solicitados' THEN 0 WHEN 'En revisión' THEN 1
+                     WHEN 'Borrador' THEN 2 ELSE 3 END,
+                CASE n.priority WHEN 'Urgente' THEN 0 WHEN 'Alta' THEN 1 WHEN 'Media' THEN 2 ELSE 3 END,
+                COALESCE(n.review_requested_at, n.updated_at) DESC
+            """,
+            values,
+        ).fetchall()
+        counts = db.execute(
+            """
+            SELECT COUNT(*) AS total,
+                SUM(editorial_state = 'Borrador') AS drafts,
+                SUM(editorial_state = 'En revisión') AS review,
+                SUM(editorial_state = 'Aprobada') AS approved,
+                SUM(editorial_state = 'Cambios solicitados') AS changes
+            FROM noticias WHERE status != 'Archivada'
+            """
+        ).fetchone()
+    items = [EditorialItem(**row_to_news(row).model_dump(), assigned_name=row["assigned_name"], approved_by_name=row["approved_by_name"]) for row in rows]
+    return EditorialBoard(
+        items=items,
+        total=int(counts["total"] or 0),
+        drafts=int(counts["drafts"] or 0),
+        review=int(counts["review"] or 0),
+        approved=int(counts["approved"] or 0),
+        changes=int(counts["changes"] or 0),
+    )
+
+
+@app.put("/api/noticias/{news_id}/flujo-editorial", response_model=EditorialItem)
+def update_editorial_flow(
+    news_id: int,
+    payload: EditorialUpdateRequest,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> EditorialItem:
+    now = utc_now()
+    with connection() as db:
+        current = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="La noticia no existe.")
+        if current["status"] in ("Archivada", "Programada", "Publicada") or current["facebook_post_id"]:
+            raise HTTPException(status_code=409, detail="El flujo editorial de esta noticia ya no puede modificarse.")
+
+        state = str(current["editorial_state"])
+        assigned = current["assigned_to"]
+        note = str(current["review_note"] or "")
+        review_requested_at = current["review_requested_at"]
+        approved_at = current["approved_at"]
+        approved_by = current["approved_by"]
+        news_status = str(current["status"])
+
+        if payload.action == "assign":
+            require_role(user, "Administrador", "Editor")
+            if payload.assigned_to is not None:
+                target = db.execute("SELECT id FROM users WHERE id = ? AND active = 1", (payload.assigned_to,)).fetchone()
+                if target is None:
+                    raise HTTPException(status_code=404, detail="El responsable seleccionado no está activo.")
+            assigned = payload.assigned_to
+        elif payload.action == "request_review":
+            if assigned is not None and user.role == "Reportero" and int(assigned) != user.id:
+                raise HTTPException(status_code=403, detail="Esta noticia está asignada a otro integrante.")
+            state, note, review_requested_at = "En revisión", payload.note, now
+            approved_at, approved_by, news_status = None, None, "En revisión"
+            if assigned is None:
+                assigned = user.id
+        elif payload.action == "approve":
+            require_role(user, "Administrador", "Editor")
+            if state != "En revisión":
+                raise HTTPException(status_code=409, detail="Primero envía la noticia a revisión.")
+            state, note, approved_at, approved_by, news_status = "Aprobada", payload.note, now, user.id, "Pendiente"
+        elif payload.action == "request_changes":
+            require_role(user, "Administrador", "Editor")
+            if state != "En revisión":
+                raise HTTPException(status_code=409, detail="Solo se pueden devolver noticias que están en revisión.")
+            if not payload.note:
+                raise HTTPException(status_code=422, detail="Escribe las correcciones solicitadas.")
+            state, note, approved_at, approved_by, news_status = "Cambios solicitados", payload.note, None, None, "Pendiente"
+        else:
+            if user.role == "Reportero" and assigned is not None and int(assigned) != user.id:
+                raise HTTPException(status_code=403, detail="Esta noticia está asignada a otro integrante.")
+            state, note, review_requested_at = "Borrador", payload.note, None
+            approved_at, approved_by, news_status = None, None, "Pendiente"
+
+        db.execute(
+            """
+            UPDATE noticias SET editorial_state = ?, assigned_to = ?, review_note = ?,
+                review_requested_at = ?, approved_at = ?, approved_by = ?, status = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (state, assigned, note, review_requested_at, approved_at, approved_by, news_status, now, news_id),
+        )
+        updated = db.execute(
+            """
+            SELECT n.*, COALESCE(u.name, 'Sin asignar') AS assigned_name,
+                   COALESCE(a.name, '') AS approved_by_name
+            FROM noticias n LEFT JOIN users u ON u.id = n.assigned_to
+            LEFT JOIN users a ON a.id = n.approved_by WHERE n.id = ?
+            """,
+            (news_id,),
+        ).fetchone()
+    labels = {
+        "assign": "Asignó noticia", "request_review": "Envió a revisión", "approve": "Aprobó noticia",
+        "request_changes": "Solicitó cambios", "reopen": "Reabrió borrador",
+    }
+    audit(user, labels[payload.action], "noticia", news_id, str(updated["title"]))
+    return EditorialItem(**row_to_news(updated).model_dump(), assigned_name=updated["assigned_name"], approved_by_name=updated["approved_by_name"])
+
+
 @app.get("/api/noticias", response_model=NewsList)
 def list_news(
     _: Annotated[str, Depends(current_user)],
@@ -3125,6 +3325,8 @@ def geolocate_pending_news(
 def create_news(payload: NewsPayload, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> NewsItem:
     if user.role == "Reportero" and payload.status not in ("Pendiente", "En revisión"):
         raise HTTPException(status_code=403, detail="Un reportero solo puede guardar noticias pendientes o en revisión.")
+    if payload.status in ("Programada", "Publicada"):
+        raise HTTPException(status_code=409, detail="Crea la noticia como borrador y completa primero la revisión editorial.")
     now = utc_now()
     with connection() as db:
         cursor = db.execute(
@@ -3160,7 +3362,7 @@ def update_news(news_id: int, payload: NewsPayload, user: Annotated[Authenticate
         raise HTTPException(status_code=403, detail="Un reportero solo puede guardar noticias pendientes o en revisión.")
     now = utc_now()
     with connection() as db:
-        exists = db.execute("SELECT id, status, facebook_post_id FROM noticias WHERE id = ?", (news_id,)).fetchone()
+        exists = db.execute("SELECT id, status, facebook_post_id, editorial_state FROM noticias WHERE id = ?", (news_id,)).fetchone()
         if exists is None:
             raise HTTPException(status_code=404, detail="La noticia no existe.")
         if exists["status"] == "Programada" and exists["facebook_post_id"]:
@@ -3173,15 +3375,24 @@ def update_news(news_id: int, payload: NewsPayload, user: Annotated[Authenticate
                 status_code=409,
                 detail="Esta noticia ya fue publicada en Facebook y se conserva como historial.",
             )
+        if payload.status == "Programada":
+            raise HTTPException(status_code=409, detail="La programación debe realizarse desde el módulo Publicaciones.")
+        if payload.status == "Publicada" and exists["editorial_state"] != "Aprobada":
+            raise HTTPException(status_code=409, detail="La noticia debe aprobarse antes de marcarla como publicada.")
         db.execute(
             """
             UPDATE noticias SET
                 title = ?, summary = ?, content = ?, source = ?, author = ?, municipality = ?,
                 category = ?, priority = ?, status = ?, image_url = ?, url = ?, published_at = ?,
-                updated_at = ?, is_ai = ?, tags = ?, location = ?, latitude = ?, longitude = ?
+                updated_at = ?, is_ai = ?, tags = ?, location = ?, latitude = ?, longitude = ?,
+                editorial_state = CASE WHEN ? IN ('Programada', 'Publicada') THEN editorial_state ELSE 'Borrador' END,
+                review_note = CASE WHEN ? IN ('Programada', 'Publicada') THEN review_note ELSE '' END,
+                review_requested_at = CASE WHEN ? IN ('Programada', 'Publicada') THEN review_requested_at ELSE NULL END,
+                approved_at = CASE WHEN ? IN ('Programada', 'Publicada') THEN approved_at ELSE NULL END,
+                approved_by = CASE WHEN ? IN ('Programada', 'Publicada') THEN approved_by ELSE NULL END
             WHERE id = ?
             """,
-            (*news_values(payload, now), news_id),
+            (*news_values(payload, now), payload.status, payload.status, payload.status, payload.status, payload.status, news_id),
         )
     if payload.latitude is None or payload.longitude is None:
         maybe_auto_geolocate_news(news_id)
@@ -3212,6 +3423,8 @@ def publish_news_to_facebook(
         raise HTTPException(status_code=409, detail=f"Esta noticia ya está {action} en Facebook.")
     if row["status"] == "Archivada":
         raise HTTPException(status_code=409, detail="Una noticia archivada no se puede publicar.")
+    if row["editorial_state"] != "Aprobada":
+        raise HTTPException(status_code=409, detail="La noticia debe aprobarse en Revisión editorial antes de publicarse.")
 
     message = facebook_message_for_news(row)
     if len(message) < 3:
