@@ -50,13 +50,13 @@ function SourceModal({ item, onClose, onSaved }: { item: RadarSource | null; onC
         </div>
         <form onSubmit={submit}>
           <div className="form-grid">
-            <label className="full">Nombre de la fuente *<input required minLength={3} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Ej. Gobierno de Tequila" /></label>
-            <label className="full">Dirección RSS o Atom *<input required type="url" value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://sitio.mx/noticias/feed" /></label>
-            <label>Municipio<input value={draft.municipality} onChange={(event) => setDraft({ ...draft, municipality: event.target.value })} /></label>
-            <label>Categoría<select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>{categories.map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label className="full">Nombre de la fuente *<input disabled={Boolean(item?.managed)} required minLength={3} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Ej. Gobierno de Tequila" /></label>
+            <label className="full">Dirección RSS o Atom *<input disabled={Boolean(item?.managed)} required type="url" value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://sitio.mx/noticias/feed" /></label>
+            <label>Municipio<input disabled={Boolean(item?.managed)} value={draft.municipality} onChange={(event) => setDraft({ ...draft, municipality: event.target.value })} /></label>
+            <label>Categoría<select disabled={Boolean(item?.managed)} value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>{categories.map((value) => <option key={value}>{value}</option>)}</select></label>
             <label className="checkbox full"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} /> Escanear esta fuente cuando use “Escanear todas”</label>
           </div>
-          <div className="source-help"><strong>¿Qué dirección debo pegar?</strong><span>La dirección del canal RSS o Atom publicado por el sitio. El Radar no evade accesos ni consulta perfiles privados.</span></div>
+          <div className="source-help"><strong>{item?.managed ? "Cobertura administrada por Pulso Monitor" : "¿Qué dirección debo pegar?"}</strong><span>{item?.managed ? "Puedes activar o pausar este municipio. La búsqueda y la importación de borradores son automáticas." : "La dirección del canal RSS o Atom publicado por el sitio. El Radar no evade accesos ni consulta perfiles privados."}</span></div>
           {error && <div className="alert error">{error}</div>}
           <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Cancelar</button><button className="button primary" disabled={saving}>{saving ? "Guardando…" : "Guardar fuente"}</button></div>
         </form>
@@ -107,7 +107,7 @@ export default function RadarPage() {
     try {
       const result = await api.scanRadar(sourceId);
       const detected = `${result.detected} publicación${result.detected === 1 ? " nueva" : "es nuevas"}`;
-      setMessage(`Escaneo terminado: ${detected}.`);
+      setMessage(`Escaneo terminado: ${detected} · ${result.imported} borrador${result.imported === 1 ? " creado" : "es creados"}.`);
       if (result.errors.length) setError(result.errors.join(" · "));
       await load();
     } catch (caught) {
@@ -151,7 +151,7 @@ export default function RadarPage() {
   return (
     <main>
       <div className="page-heading radar-heading">
-        <div><p className="eyebrow">FASE 3 · DETECCIÓN DE CONTENIDO</p><h1>Radar</h1><p>Vigila fuentes autorizadas y convierte hallazgos en noticias pendientes.</p></div>
+        <div><p className="eyebrow">VERSIÓN 1.5 · COBERTURA LOCAL</p><h1>Radar</h1><p>Busca automáticamente noticias de Tequila y municipios cercanos.</p></div>
         <div className="heading-actions"><button className="button secondary" onClick={addSource}>+ Agregar fuente</button><button className="button primary" onClick={() => scan()} disabled={scanning !== null || sources.length === 0}>{scanning === "all" ? "Escaneando…" : "⌖ Escanear todas"}</button></div>
       </div>
 
@@ -171,9 +171,9 @@ export default function RadarPage() {
           <div className="source-list">
             {sources.map((source) => (
               <article className="source-card" key={source.id}>
-                <div className="source-card-top"><div className={`source-signal ${source.enabled ? "on" : "off"}`} /><div><strong>{source.name}</strong><span>{source.municipality} · {source.category}</span></div><span className="source-count">{source.pending}</span></div>
+                <div className="source-card-top"><div className={`source-signal ${source.enabled ? "on" : "off"}`} /><div><strong>{source.name}</strong><span>{source.municipality} · {source.category}{source.managed ? " · Automática" : ""}</span></div><span className="source-count">{source.pending}</span></div>
                 <div className="source-meta"><span>{dateTime(source.last_scan)}</span>{source.last_error && <em title={source.last_error}>Atención: {source.last_error}</em>}</div>
-                <div className="source-actions"><button onClick={() => scan(source.id)} disabled={scanning !== null}>{scanning === source.id ? "Escaneando…" : "Escanear"}</button><button onClick={() => editSource(source)}>Editar</button><button className="danger" onClick={() => removeSource(source)}>Eliminar</button></div>
+                <div className="source-actions"><button onClick={() => scan(source.id)} disabled={scanning !== null}>{scanning === source.id ? "Escaneando…" : "Escanear"}</button><button onClick={() => editSource(source)}>{source.managed ? "Activar / pausar" : "Editar"}</button>{!source.managed && <button className="danger" onClick={() => removeSource(source)}>Eliminar</button>}</div>
               </article>
             ))}
             {!loading && sources.length === 0 && <div className="radar-empty small"><div>⌖</div><strong>Aún no hay fuentes</strong><span>Agrega el primer canal RSS o Atom para comenzar.</span><button className="button primary" onClick={addSource}>Agregar fuente</button></div>}

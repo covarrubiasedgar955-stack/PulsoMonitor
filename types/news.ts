@@ -322,6 +322,8 @@ export interface RadarSourceInput {
 
 export interface RadarSource extends RadarSourceInput {
   id: number;
+  managed: boolean;
+  auto_import: boolean;
   last_scan: string | null;
   last_error: string;
   created_at: string;
@@ -360,6 +362,7 @@ export interface RadarStats {
 export interface RadarScanResult {
   scanned_sources: number;
   detected: number;
+  imported: number;
   errors: string[];
 }
 
