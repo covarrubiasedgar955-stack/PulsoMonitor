@@ -19,6 +19,7 @@ const icons: Record<AutomationKey, string> = {
   facebook: "f",
   radar: "⌖",
   geolocation: "⌾",
+  images: "▧",
   backup: "▣",
   cleanup: "⌫",
 };
@@ -123,7 +124,7 @@ export default function AutomationsPage() {
       </section>
 
       <section className="stats-grid automation-stats">
-        <div className="stat-card"><div className="stat-icon blue">↻</div><div><span>Activas</span><strong>{stats.active}</strong><small>De 5 automatizaciones</small></div></div>
+        <div className="stat-card"><div className="stat-icon blue">↻</div><div><span>Activas</span><strong>{stats.active}</strong><small>De 6 automatizaciones</small></div></div>
         <div className="stat-card"><div className="stat-icon green">✓</div><div><span>Completadas</span><strong>{stats.completed}</strong><small>Última ejecución correcta</small></div></div>
         <div className="stat-card"><div className="stat-icon red">!</div><div><span>Con atención</span><strong>{stats.errors}</strong><small>Revisa el resultado</small></div></div>
         <div className="stat-card"><div className="stat-icon purple">●</div><div><span>Alertas nuevas</span><strong>{stats.unread}</strong><small>Resultados sin revisar</small></div></div>
