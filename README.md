@@ -1,4 +1,4 @@
-# Pulso Monitor v1.2
+# Pulso Monitor v1.3
 
 Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye dashboard, gestión editorial, Asistente IA, Radar de fuentes y conexión autorizada con Facebook.
 
@@ -54,6 +54,10 @@ Centro local de administración, redacción y detección de noticias para **Puls
 - Análisis por estado, categoría, municipio y fuente.
 - Indicadores de publicación, uso de IA y cobertura geográfica.
 - Exportación de reportes CSV compatibles con Excel.
+- Calendario editorial mensual con agenda detallada por día.
+- Planeación interna de noticias mediante fecha y hora, sin publicación automática.
+- Visualización conjunta de contenido pendiente, programado y publicado.
+- Acceso directo del calendario a la cola de publicaciones de Facebook.
 
 ## Instalación rápida en Windows
 
@@ -89,6 +93,12 @@ Las tareas programadas funcionan mientras Pulso Monitor y su ventana de API est�
 El módulo **Estadísticas** transforma la actividad editorial en indicadores fáciles de revisar. Permite comparar los últimos 7, 30 o 90 días, consultar la evolución diaria, reconocer los temas, municipios y fuentes con mayor actividad, y medir qué proporción del contenido fue publicado, preparado con IA o ubicado en el mapa.
 
 El botón **Exportar Excel** descarga un archivo CSV con las noticias del periodo seleccionado. El archivo incluye título, resumen, fuente, municipio, categoría, estado, fechas, uso de IA y ubicación, y puede abrirse directamente en Excel sin modificar la base de datos.
+
+## Calendario editorial
+
+El módulo **Calendario** reúne en una vista mensual las noticias pendientes, en revisión, programadas y publicadas. Cada día muestra su carga editorial y permite abrir una agenda lateral con hora, municipio, categoría, prioridad y estado del contenido.
+
+Las noticias que aún no se han enviado a Facebook pueden recibir una **fecha editorial** para organizar su preparación. Esta fecha es interna: no publica nada por sí sola. Las publicaciones programadas en Meta conservan su fecha oficial y deben administrarse desde **Publicaciones**.
 
 ## Asistente IA
 
@@ -185,6 +195,7 @@ app/municipios/      Cobertura e indicadores por municipio
 app/mapa/            Mapa interactivo de incidencias
 app/automatizaciones/ Programación de tareas y alertas operativas
 app/estadisticas/     Indicadores, tendencias y exportación de reportes
+app/calendario/       Planeación mensual y agenda editorial
 app/usuarios/        Usuarios, roles y contraseñas
 app/configuracion/   Identidad, actividad y respaldos
 components/          Navegación e inicio de sesión
@@ -198,4 +209,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v1.2 administra noticias, equipo editorial, permisos, cobertura municipal, automatizaciones supervisadas, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Incorpora análisis editorial, reportes exportables, auditoría, alertas y respaldos sin perder los datos de versiones anteriores. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.
+La v1.3 administra noticias, agenda editorial, equipo, permisos, cobertura municipal, automatizaciones supervisadas, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Incorpora calendario, análisis, reportes exportables, auditoría, alertas y respaldos sin perder los datos de versiones anteriores. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.
