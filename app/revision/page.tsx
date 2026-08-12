@@ -16,6 +16,10 @@ function stateClass(value: EditorialState) {
   return `review-state review-${value.toLowerCase().replaceAll(" ", "-").replace("ó", "o")}`;
 }
 
+function imageStyle(value: string) {
+  return value ? { backgroundImage: `url("${value.replaceAll('"', "%22")}")` } : undefined;
+}
+
 export default function EditorialReviewPage() {
   const [board, setBoard] = useState<EditorialBoard | null>(null);
   const [team, setTeam] = useState<UserInfo[]>([]);
@@ -129,6 +133,7 @@ export default function EditorialReviewPage() {
           <div className="editorial-list">
             {visibleItems.map((item) => (
               <article className={`editorial-card ${selected?.id === item.id ? "selected" : ""}`} key={item.id} onClick={() => setSelected(item)}>
+                <div className={`editorial-card-image ${item.image_url ? "has-image" : ""}`} style={imageStyle(item.image_url)}>{item.image_url ? "" : "Sin imagen"}</div>
                 <div className="editorial-card-top"><span className={stateClass(item.editorial_state)}>{item.editorial_state}</span><span className={`priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span></div>
                 <h3>{item.title}</h3><p>{item.summary || item.content || "Sin resumen editorial."}</p>
                 <div className="editorial-meta"><span>{item.municipality}</span><span>{item.category}</span><span>{when(item.review_requested_at || item.updated_at)}</span></div>
@@ -143,6 +148,7 @@ export default function EditorialReviewPage() {
           {!selected ? <div className="editorial-placeholder"><span>✓</span><strong>Selecciona una noticia</strong><p>Aquí podrás asignarla y avanzar su revisión.</p></div> : <>
             <div className="panel-header"><div><p className="eyebrow">EXPEDIENTE EDITORIAL</p><h2>{selected.title}</h2></div></div>
             <div className="editorial-detail-body">
+              <div className={`editorial-detail-image ${selected.image_url ? "has-image" : ""}`} style={imageStyle(selected.image_url)}>{selected.image_url ? "" : "Sin imagen disponible"}</div>
               <div className="detail-status"><span className={stateClass(selected.editorial_state)}>{selected.editorial_state}</span><span className={`priority priority-${selected.priority.toLowerCase()}`}>{selected.priority}</span></div>
               <p>{selected.summary || "Esta noticia todavía no tiene resumen."}</p>
               <dl><div><dt>Responsable</dt><dd>{selected.assigned_name}</dd></div><div><dt>Municipio</dt><dd>{selected.municipality}</dd></div><div><dt>Categoría</dt><dd>{selected.category}</dd></div><div><dt>Último cambio</dt><dd>{when(selected.updated_at)}</dd></div></dl>
