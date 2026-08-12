@@ -1,4 +1,4 @@
-# Pulso Monitor v1.4
+# Pulso Monitor v1.5
 
 Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye dashboard, gestión editorial, Asistente IA, Radar de fuentes y conexión autorizada con Facebook.
 
@@ -61,6 +61,9 @@ Centro local de administración, redacción y detección de noticias para **Puls
 - Flujo editorial con responsables, revisión, aprobación y solicitud de correcciones.
 - Bloqueo de publicación hasta que un Administrador o Editor apruebe la noticia.
 - Historial de observaciones integrado con los usuarios del equipo.
+- Cobertura automática de Tequila, Amatitán, Magdalena, El Arenal, Tala, Hostotipaquillo y San Marcos.
+- Búsqueda periódica en canales públicos de noticias, con eliminación de duplicados.
+- Importación automática de resultados recientes como borradores sujetos a revisión editorial.
 
 ## Instalación rápida en Windows
 
@@ -130,6 +133,12 @@ El módulo **Radar** consulta únicamente canales RSS o Atom públicos que el ad
 4. Revisa cada hallazgo y usa `Importar a Noticias` cuando sea relevante.
 
 El Radar no evade inicios de sesión, no consulta perfiles privados y no publica automáticamente. Cada hallazgo requiere revisión humana.
+
+### Cobertura automática local
+
+Pulso Monitor incluye búsquedas públicas preconfiguradas para siete municipios de la región. Estas fuentes pueden pausarse individualmente desde **Radar**. Los resultados publicados durante los últimos siete días se incorporan como borradores y aparecen en **Revisión editorial**; nunca se aprueban ni publican automáticamente.
+
+La búsqueda se ejecuta mientras Pulso Monitor permanece encendido. Si la computadora está apagada o se cierra `iniciar.bat`, el monitoreo se reanuda la próxima vez que se abra el sistema.
 
 ## Facebook
 
@@ -219,4 +228,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v1.4 administra noticias, revisión y aprobación editorial, agenda, equipo, permisos, cobertura municipal, automatizaciones supervisadas, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Incorpora calendario, análisis, reportes exportables, auditoría, alertas y respaldos sin perder los datos de versiones anteriores. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.
+La v1.5 administra noticias, cobertura automática local, revisión y aprobación editorial, agenda, equipo, permisos, automatizaciones supervisadas, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Incorpora deduplicación, calendario, análisis, reportes exportables, auditoría, alertas y respaldos sin perder los datos de versiones anteriores. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.
