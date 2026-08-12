@@ -8,6 +8,7 @@ import type {
   AutomationJob,
   AutomationKey,
   BackupInfo,
+  CalendarResponse,
   FacebookPostList,
   FacebookPrepareResult,
   FacebookPublishResult,
@@ -205,6 +206,18 @@ export const api = {
     link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
+  },
+
+  calendar(start: string, end: string) {
+    const search = new URLSearchParams({ start, end });
+    return request<CalendarResponse>(`/api/calendario?${search.toString()}`);
+  },
+
+  planNews(id: number, plannedAt: string | null) {
+    return request<NewsItem>(`/api/noticias/${id}/plan-editorial`, {
+      method: "PUT",
+      body: JSON.stringify({ planned_at: plannedAt }),
+    });
   },
 
   listNews(params: Record<string, string | number | undefined> = {}) {

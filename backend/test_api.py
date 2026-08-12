@@ -43,7 +43,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.2.0")
+        self.assertEqual(health.json()["version"], "1.3.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -100,6 +100,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
                 tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
             self.assertIn("facebook_post_id", columns)
             self.assertIn("scheduled_at", columns)
+            self.assertIn("planned_at", columns)
             self.assertIn("location", columns)
             self.assertIn("latitude", columns)
             self.assertIn("longitude", columns)
@@ -113,6 +114,45 @@ class PulsoMonitorApiTests(unittest.TestCase):
             self.assertIn("activity_log", tables)
             self.assertIn("automation_jobs", tables)
             self.assertIn("system_notifications", tables)
+
+    def test_editorial_calendar_and_planning(self):
+        news = self.client.get("/api/noticias?limit=100", headers=self.headers).json()["items"]
+        pending = next(item for item in news if not item["facebook_post_id"] and item["status"] in ("Pendiente", "En revisión"))
+        planned = (datetime.now(timezone.utc) + timedelta(days=12)).replace(hour=17, minute=30, second=0, microsecond=0)
+        updated = self.client.put(
+            f"/api/noticias/{pending['id']}/plan-editorial",
+            headers=self.headers,
+            json={"planned_at": planned.isoformat()},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["planned_at"], planned.isoformat())
+
+        start = (planned - timedelta(days=2)).isoformat()
+        end = (planned + timedelta(days=2)).isoformat()
+        calendar = self.client.get(
+            "/api/calendario",
+            headers=self.headers,
+            params={"start": start, "end": end},
+        )
+        self.assertEqual(calendar.status_code, 200)
+        match = next(item for item in calendar.json()["items"] if item["id"] == pending["id"])
+        self.assertEqual(match["date_source"], "planned")
+        self.assertEqual(match["event_at"], planned.isoformat())
+        self.assertGreaterEqual(calendar.json()["total"], 1)
+
+        cleared = self.client.put(
+            f"/api/noticias/{pending['id']}/plan-editorial",
+            headers=self.headers,
+            json={"planned_at": None},
+        )
+        self.assertEqual(cleared.status_code, 200)
+        self.assertIsNone(cleared.json()["planned_at"])
+        too_wide = self.client.get(
+            "/api/calendario",
+            headers=self.headers,
+            params={"start": datetime.now(timezone.utc).isoformat(), "end": (datetime.now(timezone.utc) + timedelta(days=63)).isoformat()},
+        )
+        self.assertEqual(too_wide.status_code, 400)
 
     def test_automations_permissions_execution_and_alerts(self):
         jobs = self.client.get("/api/automatizaciones", headers=self.headers)

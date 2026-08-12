@@ -27,6 +27,7 @@ export interface NewsItem {
   tags: string[];
   facebook_post_id: string;
   scheduled_at: string | null;
+  planned_at: string | null;
   location: string;
   latitude: number | null;
   longitude: number | null;
@@ -37,7 +38,7 @@ export interface NewsItem {
 
 export type NewsInput = Omit<
   NewsItem,
-  "id" | "created_at" | "updated_at" | "facebook_post_id" | "scheduled_at" |
+  "id" | "created_at" | "updated_at" | "facebook_post_id" | "scheduled_at" | "planned_at" |
   "location_source" | "location_confidence" | "location_reviewed"
 >;
 
@@ -83,6 +84,33 @@ export interface AnalyticsReport {
   categories: AnalyticsPoint[];
   municipalities: AnalyticsPoint[];
   sources: AnalyticsPoint[];
+}
+
+export type CalendarDateSource = "planned" | "scheduled" | "published" | "created";
+
+export interface CalendarItem {
+  id: number;
+  title: string;
+  summary: string;
+  municipality: string;
+  category: string;
+  priority: NewsPriority;
+  status: NewsStatus;
+  event_at: string;
+  date_source: CalendarDateSource;
+  planned_at: string | null;
+  scheduled_at: string | null;
+  published_at: string | null;
+  facebook_post_id: string;
+}
+
+export interface CalendarResponse {
+  items: CalendarItem[];
+  total: number;
+  pending: number;
+  scheduled: number;
+  published: number;
+  urgent: number;
 }
 
 export interface NewsListResponse {
