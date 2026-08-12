@@ -362,7 +362,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
                 db.execute("DELETE FROM facebook_posts WHERE external_id = ?", (external_id,))
                 db.execute("DELETE FROM noticias WHERE id = ?", (news["id"],))
 
-    def test_image_backfill_discards_repeated_generic_cover(self):
+    def test_image_backfill_preserves_repeated_cover_without_replacement(self):
         ids = []
         try:
             for index in range(3):
@@ -376,12 +376,12 @@ class PulsoMonitorApiTests(unittest.TestCase):
                 ids.append(self.client.post("/api/noticias", headers=self.headers, json=payload).json()["id"])
             with patch.object(main, "fetch_open_graph_image", return_value=""):
                 _, _, discarded = main.backfill_news_images(limit=200)
-            self.assertGreaterEqual(discarded, 3)
+            self.assertEqual(discarded, 0)
             with main.connection() as db:
                 values = db.execute(
                     f"SELECT image_url FROM noticias WHERE id IN ({','.join('?' for _ in ids)})", ids
                 ).fetchall()
-            self.assertTrue(all(not row["image_url"] for row in values))
+            self.assertTrue(all(row["image_url"] == "https://example.org/assets/portada-repetida.jpg" for row in values))
         finally:
             if ids:
                 with main.connection() as db:
