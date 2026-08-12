@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 from typing import Annotated, Literal
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import feedparser
 import httpx
@@ -46,7 +46,7 @@ TOKEN_TTL_SECONDS = 12 * 60 * 60
 GEOCODER_URL = os.getenv("PULSO_GEOCODER_URL", "https://nominatim.openstreetmap.org/search").strip()
 GEOCODER_USER_AGENT = os.getenv(
     "PULSO_GEOCODER_USER_AGENT",
-    "PulsoMonitor/1.4 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
+    "PulsoMonitor/1.5 (https://github.com/covarrubiasedgar955-stack/PulsoMonitor)",
 ).strip()
 GEOCODER_LOCK = threading.Lock()
 GEOCODER_LAST_REQUEST = 0.0
@@ -309,6 +309,8 @@ def init_database() -> None:
                 municipality TEXT NOT NULL DEFAULT 'Tequila',
                 category TEXT NOT NULL DEFAULT 'General',
                 enabled INTEGER NOT NULL DEFAULT 1,
+                managed INTEGER NOT NULL DEFAULT 0,
+                auto_import INTEGER NOT NULL DEFAULT 0,
                 last_scan TEXT,
                 last_error TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -316,6 +318,11 @@ def init_database() -> None:
             )
             """
         )
+        radar_columns = {row["name"] for row in db.execute("PRAGMA table_info(radar_sources)").fetchall()}
+        if "managed" not in radar_columns:
+            db.execute("ALTER TABLE radar_sources ADD COLUMN managed INTEGER NOT NULL DEFAULT 0")
+        if "auto_import" not in radar_columns:
+            db.execute("ALTER TABLE radar_sources ADD COLUMN auto_import INTEGER NOT NULL DEFAULT 0")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS radar_items (
@@ -372,6 +379,7 @@ def init_database() -> None:
             """,
             (now, now),
         )
+        ensure_local_coverage_sources(db)
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS facebook_state (
@@ -894,6 +902,8 @@ class RadarSourcePayload(BaseModel):
 
 class RadarSource(RadarSourcePayload):
     id: int
+    managed: bool = False
+    auto_import: bool = False
     last_scan: str | None
     last_error: str
     created_at: str
@@ -932,6 +942,7 @@ class RadarStats(BaseModel):
 class RadarScanResult(BaseModel):
     scanned_sources: int
     detected: int
+    imported: int = 0
     errors: list[str]
 
 
@@ -1575,6 +1586,81 @@ def feed_published_at(entry: dict) -> str | None:
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if not parsed:
         return None
+
+
+LOCAL_COVERAGE = (
+    "Tequila", "Amatitán", "Magdalena", "El Arenal", "Tala", "Hostotipaquillo", "San Marcos",
+)
+
+
+def coverage_feed_url(municipality: str) -> str:
+    query = quote_plus(f'"{municipality}" Jalisco noticias')
+    return f"https://news.google.com/rss/search?q={query}&hl=es-419&gl=MX&ceid=MX:es-419"
+
+
+def ensure_local_coverage_sources(db: sqlite3.Connection) -> None:
+    now = utc_now()
+    for municipality in LOCAL_COVERAGE:
+        db.execute(
+            """
+            INSERT OR IGNORE INTO municipalities (name, region, state, active, created_at, updated_at)
+            VALUES (?, 'Valles', 'Jalisco', 1, ?, ?)
+            """,
+            (municipality, now, now),
+        )
+        db.execute(
+            """
+            INSERT OR IGNORE INTO radar_sources (
+                name, url, municipality, category, enabled, managed, auto_import, created_at, updated_at
+            ) VALUES (?, ?, ?, 'General', 1, 1, 1, ?, ?)
+            """,
+            (f"Cobertura automática · {municipality}", coverage_feed_url(municipality), municipality, now, now),
+        )
+
+
+def radar_item_is_recent(published_at: str | None, detected_at: str) -> bool:
+    try:
+        value = datetime.fromisoformat(published_at or detected_at)
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value >= datetime.now(timezone.utc) - timedelta(days=7)
+    except ValueError:
+        return False
+
+
+def import_radar_item_record(db: sqlite3.Connection, item: sqlite3.Row, now: str, force: bool = False) -> int | None:
+    if item["imported_news_id"] is not None or (not force and not radar_item_is_recent(item["published_at"], item["detected_at"])):
+        return None
+    duplicate = db.execute(
+        """
+        SELECT id FROM noticias
+        WHERE (TRIM(?) != '' AND TRIM(url) = TRIM(?))
+           OR (LOWER(TRIM(title)) = LOWER(TRIM(?)) AND municipality = ? COLLATE NOCASE)
+        LIMIT 1
+        """,
+        (item["url"], item["url"], item["title"], item["municipality"]),
+    ).fetchone()
+    if duplicate is not None:
+        db.execute("UPDATE radar_items SET imported_news_id = ? WHERE id = ?", (duplicate["id"], item["id"]))
+        return None
+    cursor = db.execute(
+        """
+        INSERT INTO noticias (
+            title, summary, content, source, author, municipality, category,
+            priority, status, image_url, url, published_at, updated_at, is_ai, tags,
+            editorial_state, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Borrador', ?)
+        """,
+        (
+            item["title"], item["summary"], item["summary"], item["source_name"],
+            "Cobertura automática", item["municipality"], item["category"], "Media", "Pendiente",
+            "", item["url"], item["published_at"], now, 0,
+            json.dumps(["radar", "cobertura local", item["municipality"].lower()], ensure_ascii=False), now,
+        ),
+    )
+    news_id = int(cursor.lastrowid)
+    db.execute("UPDATE radar_items SET imported_news_id = ? WHERE id = ?", (news_id, item["id"]))
+    return news_id
     try:
         return datetime.fromtimestamp(calendar.timegm(parsed), timezone.utc).isoformat(timespec="seconds")
     except (TypeError, ValueError, OverflowError):
@@ -1584,17 +1670,20 @@ def feed_published_at(entry: dict) -> str | None:
 def row_to_radar_source(row: sqlite3.Row) -> RadarSource:
     data = dict(row)
     data["enabled"] = bool(data["enabled"])
+    data["managed"] = bool(data.get("managed", 0))
+    data["auto_import"] = bool(data.get("auto_import", 0))
     data["findings"] = int(data.get("findings") or 0)
     data["pending"] = int(data.get("pending") or 0)
     return RadarSource(**data)
 
 
-def scan_radar_source(source: sqlite3.Row) -> int:
+def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
     content = fetch_feed_bytes(source["url"])
     parsed = feedparser.parse(content)
     if not parsed.entries:
         raise ValueError("No se encontraron publicaciones en esta dirección RSS o Atom.")
     detected = 0
+    imported = 0
     now = utc_now()
     with connection() as db:
         for entry in parsed.entries[:80]:
@@ -1615,11 +1704,24 @@ def scan_radar_source(source: sqlite3.Row) -> int:
                 (source["id"], external_id, title, summary, link, published_at, now),
             )
             detected += max(cursor.rowcount, 0)
+        if bool(source["auto_import"]):
+            pending = db.execute(
+                """
+                SELECT i.*, s.name AS source_name, s.municipality, s.category
+                FROM radar_items i JOIN radar_sources s ON s.id = i.source_id
+                WHERE i.source_id = ? AND i.imported_news_id IS NULL
+                ORDER BY COALESCE(i.published_at, i.detected_at) DESC LIMIT 40
+                """,
+                (source["id"],),
+            ).fetchall()
+            for item in pending:
+                if import_radar_item_record(db, item, now) is not None:
+                    imported += 1
         db.execute(
             "UPDATE radar_sources SET last_scan = ?, last_error = '', updated_at = ? WHERE id = ?",
             (now, now, source["id"]),
         )
-    return detected
+    return detected, imported
 
 
 def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = None) -> dict:
@@ -1768,10 +1870,10 @@ def run_automation_job(key: AutomationKey, scheduled: bool = False) -> Automatio
                 should_notify = result.detected > 0
             elif key == "radar":
                 result = scan_radar_sources()
-                message = f"{result.scanned_sources} fuentes revisadas · {result.detected} hallazgos nuevos."
+                message = f"{result.scanned_sources} fuentes revisadas · {result.detected} hallazgos nuevos · {result.imported} borradores creados."
                 if result.errors:
                     message += f" {len(result.errors)} fuentes con error."
-                should_notify = result.detected > 0 or bool(result.errors)
+                should_notify = result.detected > 0 or result.imported > 0 or bool(result.errors)
             elif key == "geolocation":
                 message = geolocate_automation_batch()
                 should_notify = not message.startswith("0 analizadas")
@@ -1841,7 +1943,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.4.0",
+    version="1.5.0",
     description="API local para administrar noticias, revisión editorial, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
@@ -1860,7 +1962,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.4.0"}
+    return {"status": "ok", "version": "1.5.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -2382,12 +2484,20 @@ def update_radar_source(source_id: int, payload: RadarSourcePayload, user: Annot
     now = utc_now()
     try:
         with connection() as db:
+            existing = db.execute("SELECT * FROM radar_sources WHERE id = ?", (source_id,)).fetchone()
+            if existing is None:
+                raise HTTPException(status_code=404, detail="La fuente no existe.")
+            values = (
+                (existing["name"], existing["url"], existing["municipality"], existing["category"])
+                if bool(existing["managed"])
+                else (payload.name.strip(), payload.url, payload.municipality.strip(), payload.category.strip())
+            )
             cursor = db.execute(
                 """
                 UPDATE radar_sources SET name = ?, url = ?, municipality = ?, category = ?, enabled = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (payload.name.strip(), payload.url, payload.municipality.strip(), payload.category.strip(), int(payload.enabled), now, source_id),
+                (*values, int(payload.enabled), now, source_id),
             )
             if cursor.rowcount == 0:
                 raise HTTPException(status_code=404, detail="La fuente no existe.")
@@ -2402,6 +2512,9 @@ def update_radar_source(source_id: int, payload: RadarSourcePayload, user: Annot
 def delete_radar_source(source_id: int, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> Response:
     require_role(user, "Administrador", "Editor")
     with connection() as db:
+        source = db.execute("SELECT managed FROM radar_sources WHERE id = ?", (source_id,)).fetchone()
+        if source is not None and bool(source["managed"]):
+            raise HTTPException(status_code=409, detail="La cobertura automática se desactiva desde Editar; no puede eliminarse.")
         db.execute("DELETE FROM radar_items WHERE source_id = ?", (source_id,))
         cursor = db.execute("DELETE FROM radar_sources WHERE id = ?", (source_id,))
     if cursor.rowcount == 0:
@@ -2419,10 +2532,13 @@ def scan_radar_sources(source_id: int | None = None) -> RadarScanResult:
     if source_id is not None and not rows:
         raise HTTPException(status_code=404, detail="La fuente no existe.")
     detected = 0
+    imported = 0
     errors: list[str] = []
     for source in rows:
         try:
-            detected += scan_radar_source(source)
+            source_detected, source_imported = scan_radar_source(source)
+            detected += source_detected
+            imported += source_imported
         except Exception as error:
             message = clean_feed_text(str(error), 300) or "No fue posible consultar la fuente."
             errors.append(f"{source['name']}: {message}")
@@ -2432,7 +2548,7 @@ def scan_radar_sources(source_id: int | None = None) -> RadarScanResult:
                     "UPDATE radar_sources SET last_scan = ?, last_error = ?, updated_at = ? WHERE id = ?",
                     (now, message, now, source["id"]),
                 )
-    return RadarScanResult(scanned_sources=len(rows), detected=detected, errors=errors)
+    return RadarScanResult(scanned_sources=len(rows), detected=detected, imported=imported, errors=errors)
 
 
 @app.post("/api/radar/escanear", response_model=RadarScanResult)
@@ -2478,22 +2594,12 @@ def import_radar_item(item_id: int, _: Annotated[str, Depends(current_user)]) ->
             raise HTTPException(status_code=404, detail="El hallazgo no existe.")
         if item["imported_news_id"] is not None:
             raise HTTPException(status_code=409, detail="Este hallazgo ya fue importado a Noticias.")
-        cursor = db.execute(
-            """
-            INSERT INTO noticias (
-                title, summary, content, source, author, municipality, category,
-                priority, status, image_url, url, published_at, updated_at, is_ai, tags, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                item["title"], item["summary"], item["summary"], item["source_name"],
-                "Radar Pulso Monitor", item["municipality"], item["category"], "Media", "Pendiente",
-                "", item["url"], item["published_at"], now, 0,
-                json.dumps(["radar", item["category"].lower()], ensure_ascii=False), now,
-            ),
-        )
-        news_id = int(cursor.lastrowid)
-        db.execute("UPDATE radar_items SET imported_news_id = ? WHERE id = ?", (news_id, item_id))
+        news_id = import_radar_item_record(db, item, now, force=True)
+        if news_id is None:
+            linked = db.execute("SELECT imported_news_id FROM radar_items WHERE id = ?", (item_id,)).fetchone()
+            if linked and linked["imported_news_id"]:
+                raise HTTPException(status_code=409, detail="Este hallazgo coincide con una noticia que ya existe.")
+            raise HTTPException(status_code=409, detail="No fue posible importar el hallazgo.")
     maybe_auto_geolocate_news(news_id)
     with connection() as db:
         row = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
