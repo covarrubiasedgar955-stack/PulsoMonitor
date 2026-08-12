@@ -264,6 +264,37 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(empty.json()["total"], 0)
         self.assertEqual(empty.json()["items"], [])
 
+    def test_editorial_board_filters_news_with_and_without_images(self):
+        municipality = "Filtro Imagen 155"
+        base = {
+            "title": "Filtro imagen noticia visible", "summary": "Prueba del filtro visual", "content": "Texto",
+            "source": "Prueba", "author": "Pulso", "municipality": municipality, "category": "General",
+            "priority": "Media", "status": "Pendiente", "image_url": "https://imagenes.example.org/noticia.jpg",
+            "url": "", "published_at": datetime.now(timezone.utc).isoformat(), "is_ai": False, "tags": ["imagen"],
+        }
+        pictured = self.client.post("/api/noticias", headers=self.headers, json=base).json()
+        base.update({"title": "Filtro imagen noticia vacía", "image_url": ""})
+        plain = self.client.post("/api/noticias", headers=self.headers, json=base).json()
+        try:
+            with_image = self.client.get(
+                "/api/flujo-editorial", headers=self.headers,
+                params={"municipality": municipality, "image_filter": "with"},
+            )
+            without_image = self.client.get(
+                "/api/flujo-editorial", headers=self.headers,
+                params={"municipality": municipality, "image_filter": "without"},
+            )
+            self.assertEqual(with_image.status_code, 200)
+            self.assertEqual([item["id"] for item in with_image.json()["items"]], [pictured["id"]])
+            self.assertEqual(with_image.json()["total"], 1)
+            self.assertEqual(with_image.json()["drafts"], 1)
+            self.assertEqual(without_image.status_code, 200)
+            self.assertEqual([item["id"] for item in without_image.json()["items"]], [plain["id"]])
+            self.assertEqual(without_image.json()["total"], 1)
+        finally:
+            with main.connection() as db:
+                db.execute("DELETE FROM noticias WHERE id IN (?, ?)", (pictured["id"], plain["id"]))
+
     def test_cleanup_removes_only_expired_unused_news(self):
         with main.connection() as db:
             existing = db.execute(
