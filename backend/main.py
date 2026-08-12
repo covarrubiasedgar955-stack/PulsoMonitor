@@ -58,6 +58,7 @@ NewsStatus = Literal["Pendiente", "En revisión", "Programada", "Publicada", "Ar
 NewsPriority = Literal["Baja", "Media", "Alta", "Urgente"]
 EditorialState = Literal["Borrador", "En revisión", "Aprobada", "Cambios solicitados"]
 NewsSort = Literal["newest", "oldest", "priority_desc", "priority_asc"]
+ImageFilter = Literal["all", "with", "without"]
 AICategory = Literal["General", "Seguridad", "Política", "Deportes", "Eventos", "Turismo", "Servicios", "Comunidad"]
 AITone = Literal["Informativo", "Urgente", "Institucional", "Cercano"]
 UserRole = Literal["Administrador", "Editor", "Reportero"]
@@ -3227,6 +3228,7 @@ def editorial_board(
     assigned_to: int | None = None,
     municipality: str = "",
     sort: NewsSort = "newest",
+    image_filter: ImageFilter = "all",
 ) -> EditorialBoard:
     clauses = ["n.status != 'Archivada'"]
     values: list[object] = []
@@ -3239,6 +3241,10 @@ def editorial_board(
     if municipality.strip():
         clauses.append("TRIM(n.municipality) = ? COLLATE NOCASE")
         values.append(municipality.strip())
+    if image_filter == "with":
+        clauses.append("TRIM(COALESCE(n.image_url, '')) != ''")
+    elif image_filter == "without":
+        clauses.append("TRIM(COALESCE(n.image_url, '')) = ''")
     where = " AND ".join(clauses)
     with connection() as db:
         rows = db.execute(
