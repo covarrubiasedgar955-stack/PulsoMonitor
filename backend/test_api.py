@@ -43,7 +43,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.4.0")
+        self.assertEqual(health.json()["version"], "1.5.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -120,6 +120,31 @@ class PulsoMonitorApiTests(unittest.TestCase):
             self.assertIn("activity_log", tables)
             self.assertIn("automation_jobs", tables)
             self.assertIn("system_notifications", tables)
+
+    def test_automatic_local_coverage_creates_drafts(self):
+        sources = self.client.get("/api/radar/fuentes", headers=self.headers)
+        self.assertEqual(sources.status_code, 200)
+        automatic = [item for item in sources.json() if item["managed"]]
+        self.assertEqual({item["municipality"] for item in automatic}, {
+            "Tequila", "Amatitán", "Magdalena", "El Arenal", "Tala", "Hostotipaquillo", "San Marcos",
+        })
+        source = next(item for item in automatic if item["municipality"] == "Amatitán")
+        published = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        feed = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0"><channel><title>Cobertura</title>
+          <item><guid>cobertura-auto-1</guid><title>Amatitán anuncia nueva jornada comunitaria</title>
+          <description>La actividad pública se realizará esta semana.</description>
+          <link>https://example.com/cobertura-auto-1</link><pubDate>{published}</pubDate></item>
+        </channel></rss>""".encode("utf-8")
+        with patch.object(main, "fetch_feed_bytes", return_value=feed):
+            result = self.client.post(f"/api/radar/escanear?source_id={source['id']}", headers=self.headers)
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["detected"], 1)
+        self.assertEqual(result.json()["imported"], 1)
+        board = self.client.get("/api/flujo-editorial?state=Borrador", headers=self.headers).json()
+        match = next(item for item in board["items"] if item["url"] == "https://example.com/cobertura-auto-1")
+        self.assertEqual(match["municipality"], "Amatitán")
+        self.assertEqual(match["author"], "Cobertura automática")
 
     def test_editorial_calendar_and_planning(self):
         news = self.client.get("/api/noticias?limit=100", headers=self.headers).json()["items"]
@@ -503,18 +528,18 @@ class PulsoMonitorApiTests(unittest.TestCase):
         created = self.client.post(
             "/api/municipios",
             headers=self.headers,
-            json={"name": "Amatitán", "region": "Valles", "state": "Jalisco", "active": True},
+            json={"name": "Etzatlán", "region": "Valles", "state": "Jalisco", "active": True},
         )
         self.assertEqual(created.status_code, 201)
         municipality_id = created.json()["id"]
 
         payload = {
-            "title": "Actividad comunitaria en Amatitán",
+            "title": "Actividad comunitaria en Etzatlán",
             "summary": "Resumen de cobertura municipal.",
             "content": "La comunidad participó en una actividad informativa.",
             "source": "Prueba municipal",
             "author": "Pulso Tequila",
-            "municipality": "Amatitán",
+            "municipality": "Etzatlán",
             "category": "Comunidad",
             "priority": "Urgente",
             "status": "Pendiente",
@@ -522,29 +547,29 @@ class PulsoMonitorApiTests(unittest.TestCase):
             "url": "",
             "published_at": None,
             "is_ai": False,
-            "tags": ["amatitán"],
+            "tags": ["etzatlán"],
         }
         news = self.client.post("/api/noticias", headers=self.headers, json=payload)
         self.assertEqual(news.status_code, 201)
 
         municipalities = self.client.get("/api/municipios", headers=self.headers)
-        amatitan = next(item for item in municipalities.json() if item["id"] == municipality_id)
-        self.assertEqual(amatitan["news"], 1)
-        self.assertEqual(amatitan["pending"], 1)
-        self.assertEqual(amatitan["urgent"], 1)
+        etzatlan = next(item for item in municipalities.json() if item["id"] == municipality_id)
+        self.assertEqual(etzatlan["news"], 1)
+        self.assertEqual(etzatlan["pending"], 1)
+        self.assertEqual(etzatlan["urgent"], 1)
 
-        filtered = self.client.get("/api/noticias?municipality=Amatitán", headers=self.headers)
+        filtered = self.client.get("/api/noticias?municipality=Etzatlán", headers=self.headers)
         self.assertEqual(filtered.status_code, 200)
         self.assertEqual(filtered.json()["total"], 1)
 
         renamed = self.client.put(
             f"/api/municipios/{municipality_id}",
             headers=self.headers,
-            json={"name": "Amatitán Centro", "region": "Valles", "state": "Jalisco", "active": False},
+            json={"name": "Etzatlán Centro", "region": "Valles", "state": "Jalisco", "active": False},
         )
         self.assertEqual(renamed.status_code, 200)
         self.assertFalse(renamed.json()["active"])
-        renamed_news = self.client.get("/api/noticias?municipality=Amatitán Centro", headers=self.headers)
+        renamed_news = self.client.get("/api/noticias?municipality=Etzatlán Centro", headers=self.headers)
         self.assertEqual(renamed_news.json()["total"], 1)
 
         protected = self.client.delete(f"/api/municipios/{municipality_id}", headers=self.headers)
