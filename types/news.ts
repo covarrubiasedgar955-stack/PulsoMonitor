@@ -259,7 +259,7 @@ export interface BackupInfo {
   created_at: string;
 }
 
-export type AutomationKey = "facebook" | "radar" | "geolocation" | "backup" | "cleanup";
+export type AutomationKey = "facebook" | "radar" | "geolocation" | "images" | "backup" | "cleanup";
 
 export interface AutomationJob {
   key: AutomationKey;
