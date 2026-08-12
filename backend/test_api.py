@@ -238,6 +238,27 @@ class PulsoMonitorApiTests(unittest.TestCase):
                     (original_title, news["id"]),
                 )
 
+    def test_editorial_board_filters_by_municipality(self):
+        board = self.client.get(
+            "/api/flujo-editorial",
+            headers=self.headers,
+            params={"municipality": "Tequila"},
+        )
+        self.assertEqual(board.status_code, 200)
+        payload = board.json()
+        self.assertTrue(payload["items"])
+        self.assertTrue(all(item["municipality"] == "Tequila" for item in payload["items"]))
+        self.assertEqual(payload["total"], len(payload["items"]))
+
+        empty = self.client.get(
+            "/api/flujo-editorial",
+            headers=self.headers,
+            params={"municipality": "Municipio inexistente"},
+        )
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.json()["total"], 0)
+        self.assertEqual(empty.json()["items"], [])
+
     def test_automations_permissions_execution_and_alerts(self):
         jobs = self.client.get("/api/automatizaciones", headers=self.headers)
         self.assertEqual(jobs.status_code, 200)

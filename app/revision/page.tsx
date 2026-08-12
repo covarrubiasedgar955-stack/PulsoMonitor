@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
-import type { EditorialAction, EditorialBoard, EditorialItem, EditorialState, UserInfo } from "@/types/news";
+import type { EditorialAction, EditorialBoard, EditorialItem, EditorialState, Municipality, UserInfo } from "@/types/news";
 
 const states: EditorialState[] = ["Borrador", "En revisión", "Aprobada", "Cambios solicitados"];
 
@@ -19,9 +19,11 @@ function stateClass(value: EditorialState) {
 export default function EditorialReviewPage() {
   const [board, setBoard] = useState<EditorialBoard | null>(null);
   const [team, setTeam] = useState<UserInfo[]>([]);
+  const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [state, setState] = useState("");
   const [assignee, setAssignee] = useState("");
+  const [municipality, setMunicipality] = useState("");
   const [selected, setSelected] = useState<EditorialItem | null>(null);
   const [noteAction, setNoteAction] = useState<EditorialAction | null>(null);
   const [note, setNote] = useState("");
@@ -34,20 +36,22 @@ export default function EditorialReviewPage() {
     setLoading(true);
     setError("");
     try {
-      const [result, members, current] = await Promise.all([
-        api.editorialBoard(state, assignee ? Number(assignee) : undefined),
+      const [result, members, current, municipalityList] = await Promise.all([
+        api.editorialBoard(state, assignee ? Number(assignee) : undefined, municipality),
         api.editorialTeam(),
         api.currentUser(),
+        api.listMunicipalities(),
       ]);
       setBoard(result);
       setTeam(members);
       setUser(current);
+      setMunicipalities(municipalityList.filter((item) => item.active));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No se pudo cargar la revisión editorial.");
     } finally {
       setLoading(false);
     }
-  }, [assignee, state]);
+  }, [assignee, municipality, state]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -115,6 +119,7 @@ export default function EditorialReviewPage() {
       <section className="editorial-layout">
         <div className="panel editorial-board">
           <div className="editorial-filters">
+            <select value={municipality} onChange={(event) => setMunicipality(event.target.value)} aria-label="Municipio"><option value="">Todos los municipios</option>{municipalities.map((item) => <option value={item.name} key={item.id}>{item.name}</option>)}</select>
             <select value={state} onChange={(event) => setState(event.target.value)} aria-label="Estado editorial"><option value="">Todos los estados</option>{states.map((value) => <option key={value}>{value}</option>)}</select>
             <select value={assignee} onChange={(event) => setAssignee(event.target.value)} aria-label="Responsable"><option value="">Todo el equipo</option>{team.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select>
             <button className="button secondary" onClick={() => void load()}>Actualizar</button>

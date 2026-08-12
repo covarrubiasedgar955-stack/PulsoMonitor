@@ -227,10 +227,11 @@ export const api = {
     });
   },
 
-  editorialBoard(state = "", assignedTo?: number) {
+  editorialBoard(state = "", assignedTo?: number, municipality = "") {
     const search = new URLSearchParams();
     if (state) search.set("state", state);
     if (assignedTo !== undefined) search.set("assigned_to", String(assignedTo));
+    if (municipality) search.set("municipality", municipality);
     return request<EditorialBoard>(`/api/flujo-editorial${search.size ? `?${search.toString()}` : ""}`);
   },
 

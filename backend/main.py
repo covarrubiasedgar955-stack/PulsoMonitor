@@ -3114,6 +3114,7 @@ def editorial_board(
     _: Annotated[AuthenticatedUser, Depends(current_user)],
     state: str = "",
     assigned_to: int | None = None,
+    municipality: str = "",
 ) -> EditorialBoard:
     clauses = ["n.status != 'Archivada'"]
     values: list[object] = []
@@ -3123,6 +3124,9 @@ def editorial_board(
     if assigned_to is not None:
         clauses.append("n.assigned_to = ?")
         values.append(assigned_to)
+    if municipality.strip():
+        clauses.append("TRIM(n.municipality) = ? COLLATE NOCASE")
+        values.append(municipality.strip())
     where = " AND ".join(clauses)
     with connection() as db:
         rows = db.execute(
@@ -3142,14 +3146,15 @@ def editorial_board(
             values,
         ).fetchall()
         counts = db.execute(
-            """
+            f"""
             SELECT COUNT(*) AS total,
                 SUM(editorial_state = 'Borrador') AS drafts,
                 SUM(editorial_state = 'En revisión') AS review,
                 SUM(editorial_state = 'Aprobada') AS approved,
                 SUM(editorial_state = 'Cambios solicitados') AS changes
-            FROM noticias WHERE status != 'Archivada'
-            """
+            FROM noticias n WHERE {where}
+            """,
+            values,
         ).fetchone()
     items = [EditorialItem(**row_to_news(row).model_dump(), assigned_name=row["assigned_name"], approved_by_name=row["approved_by_name"]) for row in rows]
     return EditorialBoard(
