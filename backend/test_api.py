@@ -284,6 +284,27 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(empty.json()["total"], 0)
         self.assertEqual(empty.json()["items"], [])
 
+    def test_editorial_board_filters_by_search_priority_and_category(self):
+        payload = {
+            "title": "Incendio industrial para búsqueda editorial", "summary": "Protección Civil atendió el reporte",
+            "content": "Contenido verificable", "source": "Fuente Especial 194", "author": "Pulso",
+            "municipality": "Tequila", "category": "Seguridad", "priority": "Urgente", "status": "Pendiente",
+            "image_url": "", "url": "https://example.com/original-194", "published_at": datetime.now(timezone.utc).isoformat(),
+            "is_ai": False, "tags": ["filtro-194"],
+        }
+        news = self.client.post("/api/noticias", headers=self.headers, json=payload).json()
+        try:
+            result = self.client.get(
+                "/api/flujo-editorial", headers=self.headers,
+                params={"search": "Fuente Especial 194", "priority": "Urgente", "category": "Seguridad"},
+            )
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual([item["id"] for item in result.json()["items"]], [news["id"]])
+            self.assertEqual(result.json()["total"], 1)
+        finally:
+            with main.connection() as db:
+                db.execute("DELETE FROM noticias WHERE id = ?", (news["id"],))
+
     def test_editorial_board_filters_news_with_and_without_images(self):
         municipality = "Filtro Imagen 155"
         base = {
