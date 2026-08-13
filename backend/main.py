@@ -1724,18 +1724,71 @@ def radar_item_is_recent(published_at: str | None, detected_at: str) -> bool:
         return False
 
 
+OTHER_STATE_NAMES = (
+    "guerrero", "michoacan", "nayarit", "colima", "guanajuato", "zacatecas",
+    "sinaloa", "sonora", "oaxaca", "chiapas", "puebla", "veracruz", "chihuahua",
+    "coahuila", "durango", "queretaro", "tabasco", "tamaulipas", "yucatan",
+)
+
+
+def normalized_news_title(value: str) -> str:
+    title = clean_feed_text(value, 300)
+    title = re.split(r"\s+(?:-|–|—|\|)\s+", title, maxsplit=1)[0]
+    return re.sub(r"[^a-z0-9]+", " ", folded(title)).strip()
+
+
+def radar_item_matches_coverage(title: str, summary: str, municipality: str) -> bool:
+    text = folded(f"{title} {summary}")
+    place = folded(municipality)
+    if place not in text:
+        return False
+    if "jalisco" not in text and any(re.search(rf"\b{re.escape(state)}\b", text) for state in OTHER_STATE_NAMES):
+        return False
+    return True
+
+
+def prune_automatic_drafts() -> int:
+    """Remove only untouched automatic duplicates or obvious out-of-coverage results."""
+    with connection() as db:
+        rows = db.execute(
+            """SELECT id, title, summary, municipality FROM noticias
+            WHERE author = 'Cobertura automática' AND editorial_state = 'Borrador'
+              AND status = 'Pendiente' AND assigned_to IS NULL
+            ORDER BY datetime(COALESCE(published_at, created_at)) DESC, id DESC"""
+        ).fetchall()
+    seen: set[str] = set()
+    delete_ids: list[int] = []
+    for row in rows:
+        identity = normalized_news_title(row["title"])
+        relevant = radar_item_matches_coverage(row["title"], row["summary"], row["municipality"])
+        if not relevant or not identity or identity in seen:
+            delete_ids.append(row["id"])
+        else:
+            seen.add(identity)
+    if not delete_ids:
+        return 0
+    create_database_backup()
+    with connection() as db:
+        placeholders = ",".join("?" for _ in delete_ids)
+        db.execute(f"DELETE FROM noticias WHERE id IN ({placeholders})", delete_ids)
+        db.execute(f"UPDATE radar_items SET imported_news_id = NULL WHERE imported_news_id IN ({placeholders})", delete_ids)
+    return len(delete_ids)
+
+
 def import_radar_item_record(db: sqlite3.Connection, item: sqlite3.Row, now: str, force: bool = False) -> int | None:
     if item["imported_news_id"] is not None or (not force and not radar_item_is_recent(item["published_at"], item["detected_at"])):
         return None
-    duplicate = db.execute(
-        """
-        SELECT id FROM noticias
+    if not force and not radar_item_matches_coverage(item["title"], item["summary"], item["municipality"]):
+        return None
+    normalized_title = normalized_news_title(item["title"])
+    candidates = db.execute(
+        """SELECT id, title FROM noticias
         WHERE (TRIM(?) != '' AND TRIM(url) = TRIM(?))
-           OR (LOWER(TRIM(title)) = LOWER(TRIM(?)) AND municipality = ? COLLATE NOCASE)
-        LIMIT 1
-        """,
-        (item["url"], item["url"], item["title"], item["municipality"]),
-    ).fetchone()
+           OR datetime(COALESCE(published_at, created_at)) >= datetime('now', '-14 days')
+        ORDER BY id DESC LIMIT 500""",
+        (item["url"], item["url"]),
+    ).fetchall()
+    duplicate = next((row for row in candidates if normalized_news_title(row["title"]) == normalized_title), None)
     if duplicate is not None:
         db.execute("UPDATE radar_items SET imported_news_id = ? WHERE id = ?", (duplicate["id"], item["id"]))
         return None
@@ -1809,7 +1862,7 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
                 SELECT i.*, s.name AS source_name, s.municipality, s.category
                 FROM radar_items i JOIN radar_sources s ON s.id = i.source_id
                 WHERE i.source_id = ? AND i.imported_news_id IS NULL
-                ORDER BY COALESCE(i.published_at, i.detected_at) DESC LIMIT 40
+                ORDER BY COALESCE(i.published_at, i.detected_at) DESC LIMIT 8
                 """,
                 (source["id"],),
             ).fetchall()
@@ -2777,6 +2830,7 @@ def delete_radar_source(source_id: int, user: Annotated[AuthenticatedUser, Depen
 
 
 def scan_radar_sources(source_id: int | None = None) -> RadarScanResult:
+    prune_automatic_drafts()
     with connection() as db:
         if source_id is not None:
             rows = db.execute("SELECT * FROM radar_sources WHERE id = ?", (source_id,)).fetchall()
