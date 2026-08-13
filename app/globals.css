@@ -738,12 +738,18 @@ tr:hover td { background: #fbfcff; }
 .editorial-card { display: grid; gap: 9px; padding: 18px 20px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background .18s ease, box-shadow .18s ease; }
 .editorial-card:hover { background: #f8faff; }
 .editorial-card.selected { position: relative; background: #eef4ff; box-shadow: inset 4px 0 #2f6ce5; }
+.editorial-card.urgent-card { background: #fffafa; box-shadow: inset 4px 0 #e53935; }
+.editorial-card.urgent-card.selected { background: #fff1f1; box-shadow: inset 4px 0 #e53935; }
 .editorial-card-image { height: 112px; display: grid; place-items: center; margin: -18px -20px 2px; color: #8793a7; background: #eef2f7 center / cover no-repeat; font-size: 10px; font-weight: 800; }
 .editorial-card-image.has-image { color: transparent; }
 .editorial-card-top, .detail-status { display: flex; align-items: center; gap: 7px; }
+.urgent-label { margin-left: auto; color: #bd2525; font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
 .editorial-card h3 { margin: 0; color: var(--ink); font-size: 13px; line-height: 1.35; }
 .editorial-card p { display: -webkit-box; overflow: hidden; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .editorial-meta { display: flex; flex-wrap: wrap; gap: 12px; color: #7d899b; font-size: 9px; }
+.editorial-source { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: 8px; color: #60708a; background: #f5f7fb; font-size: 9px; }
+.editorial-source strong { color: var(--ink); }
+.editorial-source a { color: var(--blue); font-weight: 800; text-decoration: none; white-space: nowrap; }
 .review-state { display: inline-flex; align-items: center; width: max-content; padding: 5px 9px; border-radius: 999px; font-size: 9px; font-weight: 850; }
 .review-borrador { color: #355d98; background: #e9f1ff; }
 .review-en-revision { color: #a85a00; background: #fff0d7; }
@@ -759,6 +765,10 @@ tr:hover td { background: #fbfcff; }
 .editorial-detail dl div { display: grid; gap: 3px; padding: 11px; border-radius: 9px; background: #f5f7fa; }
 .editorial-detail dt { color: #7f8a9d; font-size: 8px; font-weight: 800; text-transform: uppercase; }
 .editorial-detail dd { overflow: hidden; margin: 0; color: var(--ink); font-size: 10px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.editorial-source-detail { display: grid; gap: 10px; padding: 13px; border: 1px solid #dce6f7; border-radius: 9px; background: #f6f9ff; }
+.editorial-source-detail > div { display: grid; gap: 3px; }
+.editorial-source-detail span, .editorial-source-detail small { color: #708099; font-size: 9px; }
+.editorial-source-detail strong { color: var(--ink); font-size: 11px; }
 .editorial-detail label { display: grid; gap: 7px; color: #33425a; font-size: 10px; font-weight: 800; }
 .editorial-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .editorial-actions .button { width: 100%; text-align: center; }
