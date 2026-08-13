@@ -1760,7 +1760,7 @@ def news_titles_are_similar(first: str, second: str) -> bool:
 def radar_item_matches_coverage(title: str, summary: str, municipality: str) -> bool:
     text = folded(f"{title} {summary}")
     place = folded(municipality)
-    if place not in text:
+    if not re.search(rf"\b{re.escape(place)}\b", text):
         return False
     if "jalisco" not in text and any(re.search(rf"\b{re.escape(state)}\b", text) for state in OTHER_STATE_NAMES):
         return False
@@ -1908,6 +1908,8 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
             raw_id = str(entry.get("id") or entry.get("guid") or link or f"{title}|{published_at or ''}")
             external_id = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()
             summary = clean_feed_text(entry.get("summary") or entry.get("description"), 2_000)
+            if bool(source["managed"]) and not radar_item_matches_coverage(title, summary, source["municipality"]):
+                continue
             image_url = feed_image_url(entry, link)
             existing = db.execute(
                 "SELECT id FROM radar_items WHERE source_id = ? AND external_id = ?",
@@ -2110,6 +2112,29 @@ def cleanup_pending_radar_items(days: int = 7) -> int:
     return int(cursor.rowcount)
 
 
+def cleanup_out_of_coverage_radar_items() -> int:
+    """Remove unimported managed-source findings that do not mention their assigned municipality."""
+    with connection() as db:
+        rows = db.execute(
+            """
+            SELECT i.id, i.title, i.summary, s.municipality
+            FROM radar_items i JOIN radar_sources s ON s.id = i.source_id
+            WHERE i.imported_news_id IS NULL AND s.managed = 1
+            """
+        ).fetchall()
+    delete_ids = [
+        int(row["id"]) for row in rows
+        if not radar_item_matches_coverage(row["title"], row["summary"], row["municipality"])
+    ]
+    if not delete_ids:
+        return 0
+    create_database_backup()
+    with connection() as db:
+        placeholders = ",".join("?" for _ in delete_ids)
+        db.execute(f"DELETE FROM radar_items WHERE id IN ({placeholders})", delete_ids)
+    return len(delete_ids)
+
+
 GENERIC_IMAGE_HINTS = (
     "favicon", "placeholder", "no-image", "no_image", "sin-imagen", "sin_imagen",
     "default-image", "default_image", "site-logo", "site_logo", "brand-logo", "brand_logo",
@@ -2281,7 +2306,7 @@ def run_automation_job(key: AutomationKey, scheduled: bool = False) -> Automatio
                 should_notify = True
             else:
                 deleted = cleanup_unused_news()
-                radar_deleted = cleanup_pending_radar_items()
+                radar_deleted = cleanup_pending_radar_items() + cleanup_out_of_coverage_radar_items()
                 message = (
                     f"{deleted} noticias vencidas eliminadas · {radar_deleted} hallazgos Radar vencidos retirados. "
                     "Las noticias publicadas, programadas, aprobadas e importadas se conservaron."
@@ -2933,7 +2958,7 @@ def delete_radar_source(source_id: int, user: Annotated[AuthenticatedUser, Depen
 
 def scan_radar_sources(source_id: int | None = None) -> RadarScanResult:
     prune_automatic_drafts()
-    cleaned = cleanup_pending_radar_items()
+    cleaned = cleanup_pending_radar_items() + cleanup_out_of_coverage_radar_items()
     with connection() as db:
         if source_id is not None:
             rows = db.execute("SELECT * FROM radar_sources WHERE id = ?", (source_id,)).fetchall()
