@@ -25,6 +25,7 @@ from urllib.parse import quote_plus, urljoin, urlparse
 
 import feedparser
 import httpx
+from PIL import Image, UnidentifiedImageError
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -1987,6 +1988,22 @@ def news_image_identity(image_url: str) -> str:
     return f"{host}{path}" if host and path else ""
 
 
+def news_image_fingerprint(image_url: str) -> str:
+    """Return a small perceptual hash so resized copies share the same identity."""
+    if not image_url:
+        return ""
+    try:
+        image_bytes = fetch_feed_bytes(image_url)
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            gray = image.convert("L").resize((16, 16))
+            pixels = list(gray.getdata())
+        average = sum(pixels) / len(pixels)
+        bits = "".join("1" if pixel >= average else "0" for pixel in pixels)
+        return f"{int(bits, 2):064x}"
+    except (ValueError, httpx.HTTPError, UnidentifiedImageError, OSError, ZeroDivisionError):
+        return ""
+
+
 def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
     """Replace generic covers when possible and otherwise show an honest empty state."""
     with connection() as db:
@@ -2013,10 +2030,29 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
         if identity:
             identity_counts[identity] = identity_counts.get(identity, 0) + 1
     repeated = {identity for identity, count in identity_counts.items() if count >= 2}
+    fingerprint_cache: dict[str, str] = {}
+    fingerprint_counts: dict[str, int] = {}
+    for row in all_rows:
+        image_url = row["current_image"]
+        if not image_url:
+            continue
+        identity = news_image_identity(image_url)
+        fingerprint = fingerprint_cache.get(identity)
+        if fingerprint is None:
+            fingerprint = news_image_fingerprint(image_url)
+            fingerprint_cache[identity] = fingerprint
+        if fingerprint:
+            fingerprint_counts[fingerprint] = fingerprint_counts.get(fingerprint, 0) + 1
+    repeated_fingerprints = {value for value, count in fingerprint_counts.items() if count >= 2}
+
+    def is_repeated_image(image_url: str) -> bool:
+        identity = news_image_identity(image_url)
+        return identity in repeated or bool(fingerprint_cache.get(identity) in repeated_fingerprints)
+
     rows = [
         row for row in all_rows
         if not row["current_image"]
-        or news_image_identity(row["current_image"]) in repeated
+        or is_repeated_image(row["current_image"])
         or looks_generic_news_image(row["current_image"])
     ][:max(1, min(limit, 200))]
 
@@ -2025,17 +2061,17 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
     for row in rows:
         current_image = row["current_image"]
         current_is_generic = bool(current_image) and (
-            news_image_identity(current_image) in repeated or looks_generic_news_image(current_image)
+            is_repeated_image(current_image) or looks_generic_news_image(current_image)
         )
         image_url = ""
         for candidate in (row["facebook_image"], row["radar_image"]):
             accepted = valid_public_image_url(candidate)
-            if accepted and accepted != current_image and news_image_identity(accepted) not in repeated and not looks_generic_news_image(accepted):
+            if accepted and accepted != current_image and not is_repeated_image(accepted) and not looks_generic_news_image(accepted):
                 image_url = accepted
                 break
         if not image_url and row["url"]:
             accepted = fetch_open_graph_image(row["url"])
-            if accepted and accepted != current_image and news_image_identity(accepted) not in repeated and not looks_generic_news_image(accepted):
+            if accepted and accepted != current_image and not is_repeated_image(accepted) and not looks_generic_news_image(accepted):
                 image_url = accepted
         with connection() as db:
             if image_url:
