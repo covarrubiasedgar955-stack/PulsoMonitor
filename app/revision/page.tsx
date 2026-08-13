@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import type { EditorialAction, EditorialBoard, EditorialItem, EditorialState, Municipality, UserInfo } from "@/types/news";
 
 const states: EditorialState[] = ["Borrador", "En revisión", "Aprobada", "Cambios solicitados"];
+const categories = ["General", "Seguridad", "Política", "Deportes", "Eventos", "Turismo", "Servicios", "Comunidad", "Gobierno", "Economía"];
 
 function when(value: string | null) {
   if (!value) return "Sin fecha";
@@ -30,6 +31,9 @@ export default function EditorialReviewPage() {
   const [municipality, setMunicipality] = useState("");
   const [sort, setSort] = useState("priority_desc");
   const [imageFilter, setImageFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [priority, setPriority] = useState("");
+  const [category, setCategory] = useState("");
   const [selected, setSelected] = useState<EditorialItem | null>(null);
   const [noteAction, setNoteAction] = useState<EditorialAction | null>(null);
   const [note, setNote] = useState("");
@@ -43,7 +47,7 @@ export default function EditorialReviewPage() {
     setError("");
     try {
       const [result, members, current, municipalityList] = await Promise.all([
-        api.editorialBoard(state, assignee ? Number(assignee) : undefined, municipality, sort, imageFilter),
+        api.editorialBoard(state, assignee ? Number(assignee) : undefined, municipality, sort, imageFilter, search, priority, category),
         api.editorialTeam(),
         api.currentUser(),
         api.listMunicipalities(),
@@ -57,10 +61,10 @@ export default function EditorialReviewPage() {
     } finally {
       setLoading(false);
     }
-  }, [assignee, imageFilter, municipality, sort, state]);
+  }, [assignee, category, imageFilter, municipality, priority, search, sort, state]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
+    const timer = window.setTimeout(() => void load(), 250);
     return () => window.clearTimeout(timer);
   }, [load]);
 
@@ -125,9 +129,12 @@ export default function EditorialReviewPage() {
       <section className="editorial-layout">
         <div className="panel editorial-board">
           <div className="editorial-filters">
+            <label className="editorial-search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar título, fuente o contenido…" aria-label="Buscar noticias" /></label>
             <select value={municipality} onChange={(event) => setMunicipality(event.target.value)} aria-label="Municipio"><option value="">Todos los municipios</option>{municipalities.map((item) => <option value={item.name} key={item.id}>{item.name}</option>)}</select>
             <select value={state} onChange={(event) => setState(event.target.value)} aria-label="Estado editorial"><option value="">Todos los estados</option>{states.map((value) => <option key={value}>{value}</option>)}</select>
             <select value={assignee} onChange={(event) => setAssignee(event.target.value)} aria-label="Responsable"><option value="">Todo el equipo</option>{team.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select>
+            <select value={priority} onChange={(event) => setPriority(event.target.value)} aria-label="Prioridad"><option value="">Todas las prioridades</option><option>Baja</option><option>Media</option><option>Alta</option><option>Urgente</option></select>
+            <select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Categoría"><option value="">Todas las categorías</option>{categories.map((value) => <option key={value}>{value}</option>)}</select>
             <select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="Ordenar noticias"><option value="newest">Más recientes primero</option><option value="oldest">Más antiguas primero</option><option value="priority_desc">Mayor importancia</option><option value="priority_asc">Menor importancia</option></select>
             <select value={imageFilter} onChange={(event) => setImageFilter(event.target.value)} aria-label="Filtrar por imagen"><option value="all">Todas las imágenes</option><option value="with">Con imagen</option><option value="without">Sin imagen</option></select>
             <button className="button secondary" onClick={() => void load()}>Actualizar</button>
