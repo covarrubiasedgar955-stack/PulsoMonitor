@@ -365,6 +365,7 @@ export interface RadarScanResult {
   scanned_sources: number;
   detected: number;
   imported: number;
+  cleaned: number;
   errors: string[];
 }
 
