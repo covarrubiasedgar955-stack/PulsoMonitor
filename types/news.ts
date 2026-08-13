@@ -66,6 +66,12 @@ export interface EditorialBoard {
 
 export type EditorialAction = "assign" | "request_review" | "approve" | "request_changes" | "reopen";
 
+export interface EditorialBatchResult {
+  requested: number;
+  updated: number;
+  protected: number;
+}
+
 export interface NewsStats {
   today: number;
   pending: number;
