@@ -34,6 +34,8 @@ export default function EditorialReviewPage() {
   const [search, setSearch] = useState("");
   const [priority, setPriority] = useState("");
   const [category, setCategory] = useState("");
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [batchAssignee, setBatchAssignee] = useState("");
   const [selected, setSelected] = useState<EditorialItem | null>(null);
   const [noteAction, setNoteAction] = useState<EditorialAction | null>(null);
   const [note, setNote] = useState("");
@@ -53,6 +55,7 @@ export default function EditorialReviewPage() {
         api.listMunicipalities(),
       ]);
       setBoard(result);
+      setSelectedIds((current) => current.filter((id) => result.items.some((item) => item.id === id)));
       setTeam(members);
       setUser(current);
       setMunicipalities(municipalityList.filter((item) => item.active));
@@ -70,6 +73,30 @@ export default function EditorialReviewPage() {
 
   const canReview = user?.role === "Administrador" || user?.role === "Editor";
   const visibleItems = useMemo(() => board?.items || [], [board]);
+  const allVisibleSelected = visibleItems.length > 0 && visibleItems.every((item) => selectedIds.includes(item.id));
+
+  function toggleSelected(id: number) {
+    setSelectedIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
+  }
+
+  async function runBatch(action: "assign" | "archive" | "delete") {
+    if (!selectedIds.length) return;
+    if (action === "assign" && !batchAssignee) {
+      setError("Selecciona primero al responsable.");
+      return;
+    }
+    if (action !== "assign" && !window.confirm(`${action === "delete" ? "Eliminar" : "Archivar"} ${selectedIds.length} noticias seleccionadas? Las aprobadas, programadas o publicadas permanecerán protegidas.`)) return;
+    setSaving(true); setError(""); setMessage("");
+    try {
+      const result = await api.updateEditorialBatch(action, selectedIds, batchAssignee ? Number(batchAssignee) : null);
+      const label = action === "assign" ? "asignadas" : action === "archive" ? "archivadas" : "eliminadas";
+      setMessage(`${result.updated} noticias ${label}.${result.protected ? ` ${result.protected} permanecieron protegidas.` : ""}`);
+      setSelectedIds([]); setSelected(null);
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No se pudo completar la acción por lote.");
+    } finally { setSaving(false); }
+  }
 
   async function assign(item: EditorialItem, value: string) {
     setSaving(true); setError(""); setMessage("");
@@ -139,9 +166,18 @@ export default function EditorialReviewPage() {
             <select value={imageFilter} onChange={(event) => setImageFilter(event.target.value)} aria-label="Filtrar por imagen"><option value="all">Todas las imágenes</option><option value="with">Con imagen</option><option value="without">Sin imagen</option></select>
             <button className="button secondary" onClick={() => void load()}>Actualizar</button>
           </div>
+          <div className="editorial-batch-bar">
+            <label className="batch-select-all"><input type="checkbox" checked={allVisibleSelected} onChange={() => setSelectedIds(allVisibleSelected ? [] : visibleItems.map((item) => item.id))} /> Seleccionar visibles</label>
+            <strong>{selectedIds.length} seleccionada{selectedIds.length === 1 ? "" : "s"}</strong>
+            <select value={batchAssignee} onChange={(event) => setBatchAssignee(event.target.value)} aria-label="Responsable por lote"><option value="">Elegir responsable</option>{team.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select>
+            <button className="button secondary" disabled={!selectedIds.length || saving} onClick={() => void runBatch("assign")}>Asignar</button>
+            <button className="button secondary" disabled={!selectedIds.length || saving} onClick={() => void runBatch("archive")}>Archivar</button>
+            <button className="button danger-outline" disabled={!selectedIds.length || saving} onClick={() => void runBatch("delete")}>Eliminar</button>
+          </div>
           <div className="editorial-list">
             {visibleItems.map((item) => (
               <article className={`editorial-card ${item.priority === "Urgente" ? "urgent-card" : ""} ${selected?.id === item.id ? "selected" : ""}`} key={item.id} onClick={() => setSelected(item)}>
+                <label className="editorial-card-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)} /><span>Seleccionar noticia</span></label>
                 <div className={`editorial-card-image ${item.image_url ? "has-image" : ""}`} style={imageStyle(item.image_url)}>{item.image_url ? "" : "Sin imagen"}</div>
                 <div className="editorial-card-top"><span className={stateClass(item.editorial_state)}>{item.editorial_state}</span><span className={`priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span>{item.priority === "Urgente" && <strong className="urgent-label">Atención prioritaria</strong>}</div>
                 <h3>{item.title}</h3><p>{item.summary || item.content || "Sin resumen editorial."}</p>
