@@ -1977,7 +1977,7 @@ def looks_generic_news_image(image_url: str) -> bool:
 
 
 def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
-    """Recover useful images without leaving news empty when no replacement exists."""
+    """Replace generic covers when possible and otherwise show an honest empty state."""
     with connection() as db:
         repeated = {
             row["image_url"] for row in db.execute(
@@ -1986,24 +1986,9 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
                 GROUP BY image_url HAVING COUNT(*) >= 3"""
             ).fetchall()
         }
-        generic_rows = db.execute(
-            "SELECT id, image_url FROM noticias WHERE TRIM(COALESCE(image_url, '')) != ''"
-        ).fetchall()
-        explicitly_generic_ids = [
-            row["id"] for row in generic_rows
-            if looks_generic_news_image(row["image_url"])
-        ]
-        if explicitly_generic_ids:
-            placeholders = ",".join("?" for _ in explicitly_generic_ids)
-            db.execute(
-                f"UPDATE noticias SET image_url = '', updated_at = ? WHERE id IN ({placeholders})",
-                (utc_now(), *explicitly_generic_ids),
-            )
-
-    with connection() as db:
-        rows = db.execute(
+        all_rows = db.execute(
             """
-            SELECT n.id, COALESCE(n.url, '') AS url,
+            SELECT n.id, COALESCE(n.image_url, '') AS current_image, COALESCE(n.url, '') AS url,
                 COALESCE((
                     SELECT fp.picture_url FROM facebook_posts fp
                     WHERE fp.imported_news_id = n.id AND TRIM(COALESCE(fp.picture_url, '')) != ''
@@ -2015,31 +2000,47 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
                     ORDER BY ri.id DESC LIMIT 1
                 ), '') AS radar_image
             FROM noticias n
-            WHERE TRIM(COALESCE(n.image_url, '')) = ''
             ORDER BY datetime(COALESCE(n.published_at, n.created_at)) DESC
-            LIMIT ?
-            """,
-            (max(1, min(limit, 200)),),
+            """
         ).fetchall()
+    rows = [
+        row for row in all_rows
+        if not row["current_image"]
+        or row["current_image"] in repeated
+        or looks_generic_news_image(row["current_image"])
+    ][:max(1, min(limit, 200))]
 
     recovered = 0
+    discarded = 0
     for row in rows:
-        image_url = valid_public_image_url(row["facebook_image"]) or valid_public_image_url(row["radar_image"])
-        if looks_generic_news_image(image_url):
-            image_url = ""
+        current_image = row["current_image"]
+        current_is_generic = bool(current_image) and (
+            current_image in repeated or looks_generic_news_image(current_image)
+        )
+        image_url = ""
+        for candidate in (row["facebook_image"], row["radar_image"]):
+            accepted = valid_public_image_url(candidate)
+            if accepted and accepted != current_image and accepted not in repeated and not looks_generic_news_image(accepted):
+                image_url = accepted
+                break
         if not image_url and row["url"]:
-            image_url = fetch_open_graph_image(row["url"])
-            if looks_generic_news_image(image_url):
-                image_url = ""
-        if not image_url:
-            continue
+            accepted = fetch_open_graph_image(row["url"])
+            if accepted and accepted != current_image and accepted not in repeated and not looks_generic_news_image(accepted):
+                image_url = accepted
         with connection() as db:
-            cursor = db.execute(
-                "UPDATE noticias SET image_url = ?, updated_at = ? WHERE id = ? AND TRIM(COALESCE(image_url, '')) = ''",
-                (image_url, utc_now(), row["id"]),
-            )
-            recovered += int(cursor.rowcount)
-    return len(rows), recovered, len(explicitly_generic_ids)
+            if image_url:
+                cursor = db.execute(
+                    "UPDATE noticias SET image_url = ?, updated_at = ? WHERE id = ?",
+                    (image_url, utc_now(), row["id"]),
+                )
+                recovered += int(cursor.rowcount)
+            elif current_is_generic:
+                cursor = db.execute(
+                    "UPDATE noticias SET image_url = '', updated_at = ? WHERE id = ?",
+                    (utc_now(), row["id"]),
+                )
+                discarded += int(cursor.rowcount)
+    return len(rows), recovered, discarded
 
 
 def run_automation_job(key: AutomationKey, scheduled: bool = False) -> AutomationJob:
