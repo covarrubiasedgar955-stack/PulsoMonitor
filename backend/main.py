@@ -3551,6 +3551,9 @@ def editorial_board(
     state: str = "",
     assigned_to: int | None = None,
     municipality: str = "",
+    search: str = "",
+    priority: str = "",
+    category: str = "",
     sort: NewsSort = "priority_desc",
     image_filter: ImageFilter = "all",
 ) -> EditorialBoard:
@@ -3565,6 +3568,16 @@ def editorial_board(
     if municipality.strip():
         clauses.append("TRIM(n.municipality) = ? COLLATE NOCASE")
         values.append(municipality.strip())
+    if search.strip():
+        term = f"%{search.strip()}%"
+        clauses.append("(n.title LIKE ? COLLATE NOCASE OR n.summary LIKE ? COLLATE NOCASE OR n.content LIKE ? COLLATE NOCASE OR n.source LIKE ? COLLATE NOCASE)")
+        values.extend((term, term, term, term))
+    if priority.strip():
+        clauses.append("n.priority = ?")
+        values.append(priority.strip())
+    if category.strip():
+        clauses.append("n.category = ? COLLATE NOCASE")
+        values.append(category.strip())
     if image_filter == "with":
         clauses.append("TRIM(COALESCE(n.image_url, '')) != ''")
     elif image_filter == "without":
