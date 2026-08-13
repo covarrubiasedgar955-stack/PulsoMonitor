@@ -58,6 +58,8 @@ export interface EditorialItem extends NewsItem {
 export interface EditorialBoard {
   items: EditorialItem[];
   total: number;
+  page: number;
+  page_size: number;
   drafts: number;
   review: number;
   approved: number;

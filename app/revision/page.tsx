@@ -36,6 +36,7 @@ export default function EditorialReviewPage() {
   const [category, setCategory] = useState("");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [batchAssignee, setBatchAssignee] = useState("");
+  const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<EditorialItem | null>(null);
   const [noteAction, setNoteAction] = useState<EditorialAction | null>(null);
   const [note, setNote] = useState("");
@@ -49,7 +50,7 @@ export default function EditorialReviewPage() {
     setError("");
     try {
       const [result, members, current, municipalityList] = await Promise.all([
-        api.editorialBoard(state, assignee ? Number(assignee) : undefined, municipality, sort, imageFilter, search, priority, category),
+        api.editorialBoard(state, assignee ? Number(assignee) : undefined, municipality, sort, imageFilter, search, priority, category, page, 20),
         api.editorialTeam(),
         api.currentUser(),
         api.listMunicipalities(),
@@ -64,7 +65,9 @@ export default function EditorialReviewPage() {
     } finally {
       setLoading(false);
     }
-  }, [assignee, category, imageFilter, municipality, priority, search, sort, state]);
+  }, [assignee, category, imageFilter, municipality, page, priority, search, sort, state]);
+
+  useEffect(() => { setPage(1); }, [assignee, category, imageFilter, municipality, priority, search, sort, state]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 250);
@@ -74,6 +77,7 @@ export default function EditorialReviewPage() {
   const canReview = user?.role === "Administrador" || user?.role === "Editor";
   const visibleItems = useMemo(() => board?.items || [], [board]);
   const allVisibleSelected = visibleItems.length > 0 && visibleItems.every((item) => selectedIds.includes(item.id));
+  const totalPages = Math.max(1, Math.ceil((board?.total || 0) / (board?.page_size || 20)));
 
   function toggleSelected(id: number) {
     setSelectedIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
@@ -188,6 +192,7 @@ export default function EditorialReviewPage() {
             {loading && <div className="empty">Cargando flujo editorial…</div>}
             {!loading && visibleItems.length === 0 && <div className="empty"><strong>No hay noticias en esta sección.</strong><span>Cambia los filtros o crea contenido nuevo.</span></div>}
           </div>
+          <div className="editorial-pagination"><span>{board?.total || 0} resultados · Página {page} de {totalPages}</span><div><button className="button secondary" disabled={page <= 1 || loading} onClick={() => { setSelectedIds([]); setPage((value) => value - 1); }}>← Anterior</button><button className="button secondary" disabled={page >= totalPages || loading} onClick={() => { setSelectedIds([]); setPage((value) => value + 1); }}>Siguiente →</button></div></div>
         </div>
 
         <aside className="panel editorial-detail">

@@ -305,6 +305,18 @@ class PulsoMonitorApiTests(unittest.TestCase):
             with main.connection() as db:
                 db.execute("DELETE FROM noticias WHERE id = ?", (news["id"],))
 
+    def test_editorial_board_is_paginated(self):
+        first = self.client.get("/api/flujo-editorial", headers=self.headers, params={"page": 1, "page_size": 10})
+        second = self.client.get("/api/flujo-editorial", headers=self.headers, params={"page": 2, "page_size": 10})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["page"], 1)
+        self.assertEqual(first.json()["page_size"], 10)
+        self.assertLessEqual(len(first.json()["items"]), 10)
+        self.assertEqual(second.json()["page"], 2)
+        first_ids = {item["id"] for item in first.json()["items"]}
+        second_ids = {item["id"] for item in second.json()["items"]}
+        self.assertTrue(first_ids.isdisjoint(second_ids))
+
     def test_editorial_batch_assigns_archives_deletes_and_protects_published_news(self):
         base = {
             "title": "Acción editorial por lote 195", "summary": "Prueba por lote", "content": "Contenido",

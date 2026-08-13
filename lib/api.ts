@@ -228,7 +228,7 @@ export const api = {
     });
   },
 
-  editorialBoard(state = "", assignedTo?: number, municipality = "", sort = "priority_desc", imageFilter = "all", query = "", priority = "", category = "") {
+  editorialBoard(state = "", assignedTo?: number, municipality = "", sort = "priority_desc", imageFilter = "all", query = "", priority = "", category = "", page = 1, pageSize = 20) {
     const search = new URLSearchParams();
     if (state) search.set("state", state);
     if (assignedTo !== undefined) search.set("assigned_to", String(assignedTo));
@@ -238,6 +238,8 @@ export const api = {
     if (query) search.set("search", query);
     if (priority) search.set("priority", priority);
     if (category) search.set("category", category);
+    search.set("page", String(page));
+    search.set("page_size", String(pageSize));
     return request<EditorialBoard>(`/api/flujo-editorial${search.size ? `?${search.toString()}` : ""}`);
   },
 
