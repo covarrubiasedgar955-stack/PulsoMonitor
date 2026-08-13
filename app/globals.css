@@ -743,13 +743,13 @@ tr:hover td { background: #fbfcff; }
 .editorial-batch-bar select { height: 36px; border: 1px solid var(--line); border-radius: 8px; padding: 0 9px; background: white; color: var(--ink); font-weight: 700; }
 .editorial-batch-bar .button { min-height: 36px; padding: 0 12px; }
 .batch-select-all { display: flex; align-items: center; gap: 7px; color: #4c5b72; font-size: 10px; font-weight: 750; white-space: nowrap; }
-.editorial-card-check { width: fit-content; display: flex; align-items: center; gap: 7px; color: #60708a; font-size: 9px; font-weight: 750; }
+.editorial-card-check { position: absolute; z-index: 3; top: 12px; left: 14px; width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid #d8e0ed; border-radius: 8px; color: #60708a; background: rgba(255,255,255,.94); box-shadow: 0 3px 10px rgba(31,48,78,.1); font-size: 9px; font-weight: 750; cursor: pointer; }
 .editorial-card-check span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-.editorial-card-check input, .batch-select-all input { width: 16px; height: 16px; accent-color: var(--blue); cursor: pointer; }
+.editorial-card-check input, .batch-select-all input { width: 16px; height: 16px; margin: 0; accent-color: var(--blue); cursor: pointer; }
 .editorial-list { display: grid; max-height: 650px; overflow-y: auto; }
-.editorial-card { display: grid; gap: 9px; padding: 18px 20px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background .18s ease, box-shadow .18s ease; }
+.editorial-card { position: relative; display: grid; gap: 9px; padding: 18px 20px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background .18s ease, box-shadow .18s ease; }
 .editorial-card:hover { background: #f8faff; }
-.editorial-card.selected { position: relative; background: #eef4ff; box-shadow: inset 4px 0 #2f6ce5; }
+.editorial-card.selected { background: #eef4ff; box-shadow: inset 4px 0 #2f6ce5; }
 .editorial-card.urgent-card { background: #fffafa; box-shadow: inset 4px 0 #e53935; }
 .editorial-card.urgent-card.selected { background: #fff1f1; box-shadow: inset 4px 0 #e53935; }
 .editorial-card-image { height: 112px; display: grid; place-items: center; margin: -18px -20px 2px; color: #8793a7; background: #eef2f7 center / cover no-repeat; font-size: 10px; font-weight: 800; }
