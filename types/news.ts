@@ -324,6 +324,7 @@ export interface RadarSource extends RadarSourceInput {
   id: number;
   managed: boolean;
   auto_import: boolean;
+  consecutive_errors: number;
   last_scan: string | null;
   last_error: string;
   created_at: string;
