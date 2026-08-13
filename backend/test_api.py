@@ -332,6 +332,50 @@ class PulsoMonitorApiTests(unittest.TestCase):
                     [(row["status"], row["editorial_state"], row["facebook_post_id"], row["id"]) for row in existing],
                 )
 
+    def test_cleanup_removes_only_expired_unimported_radar_items(self):
+        source = self.client.post(
+            "/api/radar/fuentes",
+            headers=self.headers,
+            json={
+                "name": "Fuente para limpieza",
+                "url": "https://example.com/limpieza-radar.xml",
+                "municipality": "Tequila",
+                "category": "General",
+                "enabled": True,
+            },
+        ).json()
+        old_date = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        recent_date = datetime.now(timezone.utc).isoformat()
+        with main.connection() as db:
+            expired = db.execute(
+                """INSERT INTO radar_items
+                (source_id, external_id, title, summary, url, published_at, detected_at)
+                VALUES (?, ?, ?, '', '', ?, ?)""",
+                (source["id"], "cleanup-expired", "Hallazgo vencido", old_date, old_date),
+            ).lastrowid
+            recent = db.execute(
+                """INSERT INTO radar_items
+                (source_id, external_id, title, summary, url, published_at, detected_at)
+                VALUES (?, ?, ?, '', '', ?, ?)""",
+                (source["id"], "cleanup-recent", "Hallazgo reciente", recent_date, recent_date),
+            ).lastrowid
+            imported = db.execute(
+                """INSERT INTO radar_items
+                (source_id, external_id, title, summary, url, published_at, detected_at, imported_news_id)
+                VALUES (?, ?, ?, '', '', ?, ?, ?)""",
+                (source["id"], "cleanup-imported", "Hallazgo importado", old_date, old_date, 1),
+            ).lastrowid
+        try:
+            self.assertEqual(main.cleanup_pending_radar_items(), 1)
+            with main.connection() as db:
+                self.assertIsNone(db.execute("SELECT id FROM radar_items WHERE id = ?", (expired,)).fetchone())
+                self.assertIsNotNone(db.execute("SELECT id FROM radar_items WHERE id = ?", (recent,)).fetchone())
+                self.assertIsNotNone(db.execute("SELECT id FROM radar_items WHERE id = ?", (imported,)).fetchone())
+        finally:
+            with main.connection() as db:
+                db.execute("DELETE FROM radar_items WHERE source_id = ?", (source["id"],))
+                db.execute("DELETE FROM radar_sources WHERE id = ?", (source["id"],))
+
     def test_image_backfill_recovers_saved_facebook_picture(self):
         payload = {
             "title": "Recuperación de imagen 156", "summary": "Contenido con imagen pendiente", "content": "Texto",
@@ -990,11 +1034,12 @@ class PulsoMonitorApiTests(unittest.TestCase):
         )
         self.assertEqual(source.status_code, 201)
         source_id = source.json()["id"]
-        feed = """<?xml version="1.0" encoding="UTF-8"?>
+        published = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        feed = f"""<?xml version="1.0" encoding="UTF-8"?>
         <rss version="2.0"><channel><title>Noticias</title>
           <item><guid>radar-1</guid><title>Abren nuevo espacio comunitario</title>
           <description>Familias de Tequila participaron en la apertura.</description>
-          <link>https://example.com/noticia-1</link><pubDate>Tue, 04 Aug 2026 18:00:00 GMT</pubDate></item>
+          <link>https://example.com/noticia-1</link><pubDate>{published}</pubDate></item>
           <item><guid>radar-2</guid><title>Preparan actividad cultural</title>
           <description>El encuentro se realizará el fin de semana.</description>
           <link>https://example.com/noticia-2</link></item>
