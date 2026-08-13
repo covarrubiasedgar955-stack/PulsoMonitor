@@ -374,7 +374,9 @@ class PulsoMonitorApiTests(unittest.TestCase):
                     "published_at": datetime.now(timezone.utc).isoformat(), "is_ai": False, "tags": ["imagen-157"],
                 }
                 ids.append(self.client.post("/api/noticias", headers=self.headers, json=payload).json()["id"])
-            with patch.object(main, "fetch_open_graph_image", return_value=""):
+            with patch.object(main, "fetch_open_graph_image", return_value=""), patch.object(
+                main, "news_image_fingerprint", return_value="huella-logotipo-repetido"
+            ):
                 _, _, discarded = main.backfill_news_images(limit=200)
             self.assertGreaterEqual(discarded, 3)
             with main.connection() as db:
