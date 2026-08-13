@@ -370,7 +370,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
                     "title": f"Portada genérica 157 {index}", "summary": "Contenido", "content": "Texto",
                     "source": "Radar", "author": "Pulso", "municipality": "Tequila", "category": "General",
                     "priority": "Media", "status": "Pendiente",
-                    "image_url": "https://example.org/assets/portada-repetida.jpg", "url": "",
+                    "image_url": f"https://example.org/assets/portada-repetida.jpg?size={index}", "url": "",
                     "published_at": datetime.now(timezone.utc).isoformat(), "is_ai": False, "tags": ["imagen-157"],
                 }
                 ids.append(self.client.post("/api/noticias", headers=self.headers, json=payload).json()["id"])
