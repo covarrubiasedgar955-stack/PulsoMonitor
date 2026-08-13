@@ -1976,16 +1976,20 @@ def looks_generic_news_image(image_url: str) -> bool:
     return any(hint in lowered for hint in GENERIC_IMAGE_HINTS) or filename.startswith(("logo.", "logo-", "logo_", "icon."))
 
 
+def news_image_identity(image_url: str) -> str:
+    """Group temporary or resized URLs that point to the same source image."""
+    try:
+        parsed = urlparse(unescape(str(image_url or "")).strip())
+    except ValueError:
+        return ""
+    host = (parsed.hostname or "").lower()
+    path = re.sub(r"/+", "/", parsed.path).rstrip("/").lower()
+    return f"{host}{path}" if host and path else ""
+
+
 def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
     """Replace generic covers when possible and otherwise show an honest empty state."""
     with connection() as db:
-        repeated = {
-            row["image_url"] for row in db.execute(
-                """SELECT image_url FROM noticias
-                WHERE TRIM(COALESCE(image_url, '')) != ''
-                GROUP BY image_url HAVING COUNT(*) >= 3"""
-            ).fetchall()
-        }
         all_rows = db.execute(
             """
             SELECT n.id, COALESCE(n.image_url, '') AS current_image, COALESCE(n.url, '') AS url,
@@ -2003,10 +2007,16 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
             ORDER BY datetime(COALESCE(n.published_at, n.created_at)) DESC
             """
         ).fetchall()
+    identity_counts: dict[str, int] = {}
+    for row in all_rows:
+        identity = news_image_identity(row["current_image"])
+        if identity:
+            identity_counts[identity] = identity_counts.get(identity, 0) + 1
+    repeated = {identity for identity, count in identity_counts.items() if count >= 2}
     rows = [
         row for row in all_rows
         if not row["current_image"]
-        or row["current_image"] in repeated
+        or news_image_identity(row["current_image"]) in repeated
         or looks_generic_news_image(row["current_image"])
     ][:max(1, min(limit, 200))]
 
@@ -2015,17 +2025,17 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
     for row in rows:
         current_image = row["current_image"]
         current_is_generic = bool(current_image) and (
-            current_image in repeated or looks_generic_news_image(current_image)
+            news_image_identity(current_image) in repeated or looks_generic_news_image(current_image)
         )
         image_url = ""
         for candidate in (row["facebook_image"], row["radar_image"]):
             accepted = valid_public_image_url(candidate)
-            if accepted and accepted != current_image and accepted not in repeated and not looks_generic_news_image(accepted):
+            if accepted and accepted != current_image and news_image_identity(accepted) not in repeated and not looks_generic_news_image(accepted):
                 image_url = accepted
                 break
         if not image_url and row["url"]:
             accepted = fetch_open_graph_image(row["url"])
-            if accepted and accepted != current_image and accepted not in repeated and not looks_generic_news_image(accepted):
+            if accepted and accepted != current_image and news_image_identity(accepted) not in repeated and not looks_generic_news_image(accepted):
                 image_url = accepted
         with connection() as db:
             if image_url:
