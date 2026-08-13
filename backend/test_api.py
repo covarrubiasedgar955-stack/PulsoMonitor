@@ -439,6 +439,14 @@ class PulsoMonitorApiTests(unittest.TestCase):
             "Gobierno anuncia nueva obra vial importante en Tequila",
             "Protección Civil atiende incendio forestal en Amatitán",
         ))
+        category, priority, tags = main.classify_radar_content(
+            "Accidente provoca cierre vial urgente en Tequila",
+            "Protección Civil pide precaución por la emergencia.",
+            "Tequila",
+        )
+        self.assertEqual(category, "Seguridad")
+        self.assertEqual(priority, "Urgente")
+        self.assertIn("seguridad", tags)
 
     def test_automations_permissions_execution_and_alerts(self):
         jobs = self.client.get("/api/automatizaciones", headers=self.headers)
