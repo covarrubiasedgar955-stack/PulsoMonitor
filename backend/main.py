@@ -1756,6 +1756,18 @@ def radar_item_matches_coverage(title: str, summary: str, municipality: str) -> 
     return True
 
 
+def classify_radar_content(title: str, summary: str, municipality: str) -> tuple[str, NewsPriority, list[str]]:
+    analysis = local_ai_analysis(AIAnalyzeRequest.model_construct(
+        source_text=f"{title}. {summary}", municipality=municipality,
+        source="Radar", tone="Informativo",
+    ))
+    category = "Gobierno" if analysis.category == "Política" else "Economía" if any(
+        term in folded(f"{title} {summary}")
+        for term in ("empleo", "empresa", "comercio", "economia", "inversion", "turismo")
+    ) else analysis.category
+    return category, analysis.priority, analysis.tags
+
+
 def prune_automatic_drafts(max_per_municipality: int = 20, days: int = 7) -> int:
     """Keep a small, recent and unique automatic inbox without touching editorial work."""
     with connection() as db:
@@ -1769,6 +1781,7 @@ def prune_automatic_drafts(max_per_municipality: int = 20, days: int = 7) -> int
     kept_titles: list[str] = []
     municipality_counts: dict[str, int] = {}
     delete_ids: list[int] = []
+    classify_updates: list[tuple[str, str, str, int]] = []
     for row in rows:
         source_date = row["published_at"] or row["created_at"]
         try:
@@ -1786,6 +1799,11 @@ def prune_automatic_drafts(max_per_municipality: int = 20, days: int = 7) -> int
         else:
             kept_titles.append(row["title"])
             municipality_counts[municipality_key] = municipality_counts.get(municipality_key, 0) + 1
+            category, priority, tags = classify_radar_content(row["title"], row["summary"], row["municipality"])
+            classify_updates.append((category, priority, json.dumps(tags, ensure_ascii=False), row["id"]))
+    if classify_updates:
+        with connection() as db:
+            db.executemany("UPDATE noticias SET category = ?, priority = ?, tags = ? WHERE id = ?", classify_updates)
     if not delete_ids:
         return 0
     create_database_backup()
@@ -1813,6 +1831,7 @@ def import_radar_item_record(db: sqlite3.Connection, item: sqlite3.Row, now: str
     if duplicate is not None:
         db.execute("UPDATE radar_items SET imported_news_id = ? WHERE id = ?", (duplicate["id"], item["id"]))
         return None
+    category, priority, tags = classify_radar_content(item["title"], item["summary"], item["municipality"])
     cursor = db.execute(
         """
         INSERT INTO noticias (
@@ -1823,9 +1842,9 @@ def import_radar_item_record(db: sqlite3.Connection, item: sqlite3.Row, now: str
         """,
         (
             item["title"], item["summary"], item["summary"], item["source_name"],
-            "Cobertura automática", item["municipality"], item["category"], "Media", "Pendiente",
+            "Cobertura automática", item["municipality"], category, priority, "Pendiente",
             item["image_url"], item["url"], item["published_at"], now, 0,
-            json.dumps(["radar", "cobertura local", item["municipality"].lower()], ensure_ascii=False), now,
+            json.dumps(list(dict.fromkeys(["radar", "cobertura local", *tags])), ensure_ascii=False), now,
         ),
     )
     news_id = int(cursor.lastrowid)
