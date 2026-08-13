@@ -977,6 +977,7 @@ class RadarScanResult(BaseModel):
     scanned_sources: int
     detected: int
     imported: int = 0
+    cleaned: int = 0
     errors: list[str]
 
 
@@ -1895,6 +1896,15 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
                 continue
             link = str(entry.get("link") or "").strip()[:1200]
             published_at = feed_published_at(entry)
+            if published_at:
+                try:
+                    published_date = datetime.fromisoformat(published_at)
+                    if published_date.tzinfo is None:
+                        published_date = published_date.replace(tzinfo=timezone.utc)
+                    if published_date < datetime.now(timezone.utc) - timedelta(days=7):
+                        continue
+                except ValueError:
+                    pass
             raw_id = str(entry.get("id") or entry.get("guid") or link or f"{title}|{published_at or ''}")
             external_id = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()
             summary = clean_feed_text(entry.get("summary") or entry.get("description"), 2_000)
@@ -2083,6 +2093,23 @@ def cleanup_unused_news(days: int = 7) -> int:
     return int(cursor.rowcount)
 
 
+def cleanup_pending_radar_items(days: int = 7) -> int:
+    """Remove stale Radar findings that were never imported into Noticias."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    predicate = """
+        imported_news_id IS NULL
+        AND datetime(COALESCE(published_at, detected_at)) < datetime(?)
+    """
+    with connection() as db:
+        total = int(db.execute(f"SELECT COUNT(*) FROM radar_items WHERE {predicate}", (cutoff,)).fetchone()[0])
+    if total == 0:
+        return 0
+    create_database_backup()
+    with connection() as db:
+        cursor = db.execute(f"DELETE FROM radar_items WHERE {predicate}", (cutoff,))
+    return int(cursor.rowcount)
+
+
 GENERIC_IMAGE_HINTS = (
     "favicon", "placeholder", "no-image", "no_image", "sin-imagen", "sin_imagen",
     "default-image", "default_image", "site-logo", "site_logo", "brand-logo", "brand_logo",
@@ -2236,6 +2263,8 @@ def run_automation_job(key: AutomationKey, scheduled: bool = False) -> Automatio
             elif key == "radar":
                 result = scan_radar_sources()
                 message = f"{result.scanned_sources} fuentes revisadas · {result.detected} hallazgos nuevos · {result.imported} borradores creados."
+                if result.cleaned:
+                    message += f" {result.cleaned} hallazgos vencidos retirados."
                 if result.errors:
                     message += " Fuentes con error: " + " | ".join(result.errors[:3])
                 should_notify = result.detected > 0 or result.imported > 0 or bool(result.errors)
@@ -2252,8 +2281,12 @@ def run_automation_job(key: AutomationKey, scheduled: bool = False) -> Automatio
                 should_notify = True
             else:
                 deleted = cleanup_unused_news()
-                message = f"{deleted} noticias vencidas eliminadas. Las publicadas, programadas y aprobadas se conservaron."
-                should_notify = deleted > 0
+                radar_deleted = cleanup_pending_radar_items()
+                message = (
+                    f"{deleted} noticias vencidas eliminadas · {radar_deleted} hallazgos Radar vencidos retirados. "
+                    "Las noticias publicadas, programadas, aprobadas e importadas se conservaron."
+                )
+                should_notify = deleted > 0 or radar_deleted > 0
             final_status: Literal["success", "error"] = "success"
         except Exception as error:
             detail = error.detail if isinstance(error, HTTPException) else str(error)
@@ -2900,6 +2933,7 @@ def delete_radar_source(source_id: int, user: Annotated[AuthenticatedUser, Depen
 
 def scan_radar_sources(source_id: int | None = None) -> RadarScanResult:
     prune_automatic_drafts()
+    cleaned = cleanup_pending_radar_items()
     with connection() as db:
         if source_id is not None:
             rows = db.execute("SELECT * FROM radar_sources WHERE id = ?", (source_id,)).fetchall()
@@ -2934,7 +2968,7 @@ def scan_radar_sources(source_id: int | None = None) -> RadarScanResult:
                     (now, status_message, next_errors, int(disable_source), now, source["id"]),
                 )
             errors.append(f"{source['name']}: {status_message}")
-    return RadarScanResult(scanned_sources=len(rows), detected=detected, imported=imported, errors=errors)
+    return RadarScanResult(scanned_sources=len(rows), detected=detected, imported=imported, cleaned=cleaned, errors=errors)
 
 
 @app.post("/api/radar/escanear", response_model=RadarScanResult)
