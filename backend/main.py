@@ -694,6 +694,8 @@ class EditorialItem(NewsItem):
 class EditorialBoard(BaseModel):
     items: list[EditorialItem]
     total: int
+    page: int
+    page_size: int
     drafts: int
     review: int
     approved: int
@@ -3568,6 +3570,8 @@ def editorial_board(
     category: str = "",
     sort: NewsSort = "priority_desc",
     image_filter: ImageFilter = "all",
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=10, le=100)] = 20,
 ) -> EditorialBoard:
     clauses = ["n.status != 'Archivada'"]
     values: list[object] = []
@@ -3605,8 +3609,9 @@ def editorial_board(
             LEFT JOIN users a ON a.id = n.approved_by
             WHERE {where}
             ORDER BY {news_order_clause(sort, 'n.')}
+            LIMIT ? OFFSET ?
             """,
-            values,
+            [*values, page_size, (page - 1) * page_size],
         ).fetchall()
         counts = db.execute(
             f"""
@@ -3623,6 +3628,8 @@ def editorial_board(
     return EditorialBoard(
         items=items,
         total=int(counts["total"] or 0),
+        page=page,
+        page_size=page_size,
         drafts=int(counts["drafts"] or 0),
         review=int(counts["review"] or 0),
         approved=int(counts["approved"] or 0),
