@@ -1737,6 +1737,15 @@ def normalized_news_title(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", folded(title)).strip()
 
 
+def news_titles_are_similar(first: str, second: str) -> bool:
+    left = set(normalized_news_title(first).split())
+    right = set(normalized_news_title(second).split())
+    if not left or not right:
+        return False
+    shared = len(left & right)
+    return shared / min(len(left), len(right)) >= 0.60 and shared >= 4
+
+
 def radar_item_matches_coverage(title: str, summary: str, municipality: str) -> bool:
     text = folded(f"{title} {summary}")
     place = folded(municipality)
@@ -1747,31 +1756,43 @@ def radar_item_matches_coverage(title: str, summary: str, municipality: str) -> 
     return True
 
 
-def prune_automatic_drafts() -> int:
-    """Remove only untouched automatic duplicates or obvious out-of-coverage results."""
+def prune_automatic_drafts(max_per_municipality: int = 20, days: int = 7) -> int:
+    """Keep a small, recent and unique automatic inbox without touching editorial work."""
     with connection() as db:
         rows = db.execute(
-            """SELECT id, title, summary, municipality FROM noticias
+            """SELECT id, title, summary, municipality, published_at, created_at FROM noticias
             WHERE author = 'Cobertura automática' AND editorial_state = 'Borrador'
               AND status = 'Pendiente' AND assigned_to IS NULL
             ORDER BY datetime(COALESCE(published_at, created_at)) DESC, id DESC"""
         ).fetchall()
-    seen: set[str] = set()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    kept_titles: list[str] = []
+    municipality_counts: dict[str, int] = {}
     delete_ids: list[int] = []
     for row in rows:
-        identity = normalized_news_title(row["title"])
+        source_date = row["published_at"] or row["created_at"]
+        try:
+            published = datetime.fromisoformat(source_date)
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            published = datetime.min.replace(tzinfo=timezone.utc)
+        municipality_key = folded(row["municipality"])
         relevant = radar_item_matches_coverage(row["title"], row["summary"], row["municipality"])
-        if not relevant or not identity or identity in seen:
+        duplicate = any(news_titles_are_similar(row["title"], kept) for kept in kept_titles)
+        over_limit = municipality_counts.get(municipality_key, 0) >= max_per_municipality
+        if not relevant or published < cutoff or duplicate or over_limit:
             delete_ids.append(row["id"])
         else:
-            seen.add(identity)
+            kept_titles.append(row["title"])
+            municipality_counts[municipality_key] = municipality_counts.get(municipality_key, 0) + 1
     if not delete_ids:
         return 0
     create_database_backup()
     with connection() as db:
         placeholders = ",".join("?" for _ in delete_ids)
+        db.execute(f"DELETE FROM radar_items WHERE imported_news_id IN ({placeholders})", delete_ids)
         db.execute(f"DELETE FROM noticias WHERE id IN ({placeholders})", delete_ids)
-        db.execute(f"UPDATE radar_items SET imported_news_id = NULL WHERE imported_news_id IN ({placeholders})", delete_ids)
     return len(delete_ids)
 
 
