@@ -140,6 +140,9 @@ class PulsoMonitorApiTests(unittest.TestCase):
           <description>La actividad pública se realizará esta semana.</description>
           <enclosure url="https://example.com/amatitan.jpg" type="image/jpeg" />
           <link>https://example.com/cobertura-auto-1</link><pubDate>{published}</pubDate></item>
+          <item><guid>cobertura-auto-fuera</guid><title>Guadalajara anuncia operativo vial</title>
+          <description>El dispositivo se aplicará en la zona metropolitana.</description>
+          <link>https://example.com/fuera-de-cobertura</link><pubDate>{published}</pubDate></item>
         </channel></rss>""".encode("utf-8")
         with patch.object(main, "fetch_feed_bytes", return_value=feed), patch.object(main, "public_feed_url", return_value=None):
             result = self.client.post(f"/api/radar/escanear?source_id={source['id']}", headers=self.headers)
@@ -152,6 +155,21 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(match["author"], "Cobertura automática")
         self.assertEqual(match["image_url"], "https://example.com/amatitan.jpg")
         self.assertIsNotNone(match["published_at"])
+        findings = self.client.get("/api/radar/hallazgos", headers=self.headers).json()["items"]
+        self.assertFalse(any(item["url"] == "https://example.com/fuera-de-cobertura" for item in findings))
+        with main.connection() as db:
+            wrong_id = db.execute(
+                """INSERT INTO radar_items
+                (source_id, external_id, title, summary, url, detected_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    source["id"], "legacy-out-of-coverage", "Operativo vial en Guadalajara",
+                    "La zona metropolitana tendrá cierres.", "https://example.com/legacy-fuera", main.utc_now(),
+                ),
+            ).lastrowid
+        self.assertGreaterEqual(main.cleanup_out_of_coverage_radar_items(), 1)
+        with main.connection() as db:
+            self.assertIsNone(db.execute("SELECT id FROM radar_items WHERE id = ?", (wrong_id,)).fetchone())
 
     def test_editorial_calendar_and_planning(self):
         news = self.client.get("/api/noticias?limit=100", headers=self.headers).json()["items"]
