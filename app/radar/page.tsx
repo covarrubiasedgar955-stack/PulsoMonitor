@@ -172,7 +172,7 @@ export default function RadarPage() {
             {sources.map((source) => (
               <article className="source-card" key={source.id}>
                 <div className="source-card-top"><div className={`source-signal ${source.enabled ? "on" : "off"}`} /><div><strong>{source.name}</strong><span>{source.municipality} · {source.category}{source.managed ? " · Automática" : ""}</span></div><span className="source-count">{source.pending}</span></div>
-                <div className="source-meta"><span>{dateTime(source.last_scan)}</span>{source.last_error && <em title={source.last_error}>Atención: {source.last_error}</em>}</div>
+                <div className="source-meta"><span>{dateTime(source.last_scan)}</span>{source.last_error && <em title={source.last_error}>Atención ({source.consecutive_errors}/3): {source.last_error}</em>}</div>
                 <div className="source-actions"><button onClick={() => scan(source.id)} disabled={scanning !== null}>{scanning === source.id ? "Escaneando…" : "Escanear"}</button><button onClick={() => editSource(source)}>{source.managed ? "Activar / pausar" : "Editar"}</button>{!source.managed && <button className="danger" onClick={() => removeSource(source)}>Eliminar</button>}</div>
               </article>
             ))}

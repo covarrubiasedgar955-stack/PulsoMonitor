@@ -330,6 +330,7 @@ def init_database() -> None:
                 enabled INTEGER NOT NULL DEFAULT 1,
                 managed INTEGER NOT NULL DEFAULT 0,
                 auto_import INTEGER NOT NULL DEFAULT 0,
+                consecutive_errors INTEGER NOT NULL DEFAULT 0,
                 last_scan TEXT,
                 last_error TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -342,6 +343,14 @@ def init_database() -> None:
             db.execute("ALTER TABLE radar_sources ADD COLUMN managed INTEGER NOT NULL DEFAULT 0")
         if "auto_import" not in radar_columns:
             db.execute("ALTER TABLE radar_sources ADD COLUMN auto_import INTEGER NOT NULL DEFAULT 0")
+        if "consecutive_errors" not in radar_columns:
+            db.execute("ALTER TABLE radar_sources ADD COLUMN consecutive_errors INTEGER NOT NULL DEFAULT 0")
+            db.execute(
+                """
+                UPDATE radar_sources SET consecutive_errors = 2
+                WHERE managed = 0 AND TRIM(last_error) != ''
+                """
+            )
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS radar_items (
@@ -927,6 +936,7 @@ class RadarSource(RadarSourcePayload):
     id: int
     managed: bool = False
     auto_import: bool = False
+    consecutive_errors: int = 0
     last_scan: str | None
     last_error: str
     created_at: str
@@ -1919,7 +1929,10 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
                 if import_radar_item_record(db, item, now) is not None:
                     imported += 1
         db.execute(
-            "UPDATE radar_sources SET last_scan = ?, last_error = '', updated_at = ? WHERE id = ?",
+            """
+            UPDATE radar_sources SET last_scan = ?, last_error = '', consecutive_errors = 0, updated_at = ?
+            WHERE id = ?
+            """,
             (now, now, source["id"]),
         )
     return detected, imported
@@ -2855,10 +2868,11 @@ def update_radar_source(source_id: int, payload: RadarSourcePayload, user: Annot
             )
             cursor = db.execute(
                 """
-                UPDATE radar_sources SET name = ?, url = ?, municipality = ?, category = ?, enabled = ?, updated_at = ?
+                UPDATE radar_sources SET name = ?, url = ?, municipality = ?, category = ?, enabled = ?,
+                    consecutive_errors = CASE WHEN ? = 1 THEN 0 ELSE consecutive_errors END, updated_at = ?
                 WHERE id = ?
                 """,
-                (*values, int(payload.enabled), now, source_id),
+                (*values, int(payload.enabled), int(payload.enabled), now, source_id),
             )
             if cursor.rowcount == 0:
                 raise HTTPException(status_code=404, detail="La fuente no existe.")
@@ -2903,13 +2917,23 @@ def scan_radar_sources(source_id: int | None = None) -> RadarScanResult:
             imported += source_imported
         except Exception as error:
             message = clean_feed_text(str(error), 300) or "No fue posible consultar la fuente."
-            errors.append(f"{source['name']}: {message}")
             with connection() as db:
                 now = utc_now()
-                db.execute(
-                    "UPDATE radar_sources SET last_scan = ?, last_error = ?, updated_at = ? WHERE id = ?",
-                    (now, message, now, source["id"]),
+                next_errors = int(source["consecutive_errors"] or 0) + 1
+                disable_source = not bool(source["managed"]) and next_errors >= 3
+                status_message = (
+                    f"{message} Fuente pausada automáticamente después de {next_errors} errores consecutivos."
+                    if disable_source
+                    else message
                 )
+                db.execute(
+                    """
+                    UPDATE radar_sources SET last_scan = ?, last_error = ?, consecutive_errors = ?,
+                        enabled = CASE WHEN ? = 1 THEN 0 ELSE enabled END, updated_at = ? WHERE id = ?
+                    """,
+                    (now, status_message, next_errors, int(disable_source), now, source["id"]),
+                )
+            errors.append(f"{source['name']}: {status_message}")
     return RadarScanResult(scanned_sources=len(rows), detected=detected, imported=imported, errors=errors)
 
 

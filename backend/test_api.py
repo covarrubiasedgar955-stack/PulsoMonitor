@@ -115,6 +115,8 @@ class PulsoMonitorApiTests(unittest.TestCase):
             self.assertIn("location_reviewed", columns)
             radar_columns = {row[1] for row in db.execute("PRAGMA table_info(radar_items)").fetchall()}
             self.assertIn("image_url", radar_columns)
+            radar_source_columns = {row[1] for row in db.execute("PRAGMA table_info(radar_sources)").fetchall()}
+            self.assertIn("consecutive_errors", radar_source_columns)
             self.assertIn("municipalities", tables)
             self.assertIn("geocoding_cache", tables)
             self.assertIn("users", tables)
@@ -1016,6 +1018,46 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertTrue(imported.json()["image_url"])
         duplicate = self.client.post(f"/api/radar/hallazgos/{item_id}/importar", headers=self.headers)
         self.assertEqual(duplicate.status_code, 409)
+
+    def test_radar_source_is_paused_after_three_consecutive_errors(self):
+        source = self.client.post(
+            "/api/radar/fuentes",
+            headers=self.headers,
+            json={
+                "name": "Fuente con fallos",
+                "url": "https://example.com/fuente-rota.xml",
+                "municipality": "Tequila",
+                "category": "General",
+                "enabled": True,
+            },
+        )
+        source_id = source.json()["id"]
+        with patch.object(main, "fetch_feed_bytes", side_effect=ValueError("Canal RSS no disponible.")):
+            for expected_errors in range(1, 4):
+                result = self.client.post(f"/api/radar/escanear?source_id={source_id}", headers=self.headers)
+                self.assertEqual(result.status_code, 200)
+                current = next(
+                    item for item in self.client.get("/api/radar/fuentes", headers=self.headers).json()
+                    if item["id"] == source_id
+                )
+                self.assertEqual(current["consecutive_errors"], expected_errors)
+        self.assertFalse(current["enabled"])
+        self.assertIn("pausada automáticamente", current["last_error"])
+
+        reactivated = self.client.put(
+            f"/api/radar/fuentes/{source_id}",
+            headers=self.headers,
+            json={
+                "name": "Fuente corregida",
+                "url": "https://example.com/fuente-corregida.xml",
+                "municipality": "Tequila",
+                "category": "General",
+                "enabled": True,
+            },
+        )
+        self.assertEqual(reactivated.status_code, 200)
+        self.assertTrue(reactivated.json()["enabled"])
+        self.assertEqual(reactivated.json()["consecutive_errors"], 0)
 
 
 if __name__ == "__main__":
