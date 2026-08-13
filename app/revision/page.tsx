@@ -28,7 +28,7 @@ export default function EditorialReviewPage() {
   const [state, setState] = useState("");
   const [assignee, setAssignee] = useState("");
   const [municipality, setMunicipality] = useState("");
-  const [sort, setSort] = useState("newest");
+  const [sort, setSort] = useState("priority_desc");
   const [imageFilter, setImageFilter] = useState("all");
   const [selected, setSelected] = useState<EditorialItem | null>(null);
   const [noteAction, setNoteAction] = useState<EditorialAction | null>(null);
@@ -134,10 +134,11 @@ export default function EditorialReviewPage() {
           </div>
           <div className="editorial-list">
             {visibleItems.map((item) => (
-              <article className={`editorial-card ${selected?.id === item.id ? "selected" : ""}`} key={item.id} onClick={() => setSelected(item)}>
+              <article className={`editorial-card ${item.priority === "Urgente" ? "urgent-card" : ""} ${selected?.id === item.id ? "selected" : ""}`} key={item.id} onClick={() => setSelected(item)}>
                 <div className={`editorial-card-image ${item.image_url ? "has-image" : ""}`} style={imageStyle(item.image_url)}>{item.image_url ? "" : "Sin imagen"}</div>
-                <div className="editorial-card-top"><span className={stateClass(item.editorial_state)}>{item.editorial_state}</span><span className={`priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span></div>
+                <div className="editorial-card-top"><span className={stateClass(item.editorial_state)}>{item.editorial_state}</span><span className={`priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span>{item.priority === "Urgente" && <strong className="urgent-label">Atención prioritaria</strong>}</div>
                 <h3>{item.title}</h3><p>{item.summary || item.content || "Sin resumen editorial."}</p>
+                <div className="editorial-source"><span>Fuente: <strong>{item.source || "Sin identificar"}</strong></span>{item.url && <a href={item.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Abrir original ↗</a>}</div>
                 <div className="editorial-meta"><span>{item.municipality}</span><span>{item.category}</span><span>{when(item.review_requested_at || item.updated_at)}</span></div>
               </article>
             ))}
@@ -154,6 +155,7 @@ export default function EditorialReviewPage() {
               <div className="detail-status"><span className={stateClass(selected.editorial_state)}>{selected.editorial_state}</span><span className={`priority priority-${selected.priority.toLowerCase()}`}>{selected.priority}</span></div>
               <p>{selected.summary || "Esta noticia todavía no tiene resumen."}</p>
               <dl><div><dt>Responsable</dt><dd>{selected.assigned_name}</dd></div><div><dt>Municipio</dt><dd>{selected.municipality}</dd></div><div><dt>Categoría</dt><dd>{selected.category}</dd></div><div><dt>Último cambio</dt><dd>{when(selected.updated_at)}</dd></div></dl>
+              <div className="editorial-source-detail"><div><span>Fuente original</span><strong>{selected.source || "Sin identificar"}</strong></div>{selected.url ? <a className="button secondary" href={selected.url} target="_blank" rel="noreferrer">Abrir publicación original ↗</a> : <small>Esta noticia no incluye un enlace de origen.</small>}</div>
               {selected.review_note && <div className="review-note"><strong>Observaciones</strong><p>{selected.review_note}</p></div>}
               {canReview && <label>Asignar responsable<select disabled={saving} value={selected.assigned_to || ""} onChange={(event) => void assign(selected, event.target.value)}><option value="">Sin asignar</option>{team.map((member) => <option value={member.id} key={member.id}>{member.name} · {member.role}</option>)}</select></label>}
               <div className="editorial-actions">
