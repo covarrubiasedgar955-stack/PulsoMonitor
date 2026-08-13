@@ -431,6 +431,14 @@ class PulsoMonitorApiTests(unittest.TestCase):
             main.normalized_news_title("Nueva obra vial en Tequila - El Informador"),
             main.normalized_news_title("Nueva obra vial en Tequila | Notisistema"),
         )
+        self.assertTrue(main.news_titles_are_similar(
+            "Gobierno anuncia nueva obra vial importante en Tequila",
+            "Anuncian importante obra vial nueva para Tequila - Notisistema",
+        ))
+        self.assertFalse(main.news_titles_are_similar(
+            "Gobierno anuncia nueva obra vial importante en Tequila",
+            "Protección Civil atiende incendio forestal en Amatitán",
+        ))
 
     def test_automations_permissions_execution_and_alerts(self):
         jobs = self.client.get("/api/automatizaciones", headers=self.headers)
