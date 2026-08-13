@@ -10,6 +10,7 @@ import type {
   BackupInfo,
   CalendarResponse,
   EditorialAction,
+  EditorialBatchResult,
   EditorialBoard,
   EditorialItem,
   FacebookPostList,
@@ -244,6 +245,13 @@ export const api = {
     return request<EditorialItem>(`/api/noticias/${id}/flujo-editorial`, {
       method: "PUT",
       body: JSON.stringify({ action, assigned_to: assignedTo, note }),
+    });
+  },
+
+  updateEditorialBatch(action: "assign" | "archive" | "delete", newsIds: number[], assignedTo: number | null = null) {
+    return request<EditorialBatchResult>("/api/flujo-editorial/lote", {
+      method: "POST",
+      body: JSON.stringify({ action, news_ids: newsIds, assigned_to: assignedTo }),
     });
   },
 

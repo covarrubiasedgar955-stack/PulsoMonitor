@@ -305,6 +305,49 @@ class PulsoMonitorApiTests(unittest.TestCase):
             with main.connection() as db:
                 db.execute("DELETE FROM noticias WHERE id = ?", (news["id"],))
 
+    def test_editorial_batch_assigns_archives_deletes_and_protects_published_news(self):
+        base = {
+            "title": "Acción editorial por lote 195", "summary": "Prueba por lote", "content": "Contenido",
+            "source": "Prueba", "author": "Pulso", "municipality": "Tequila", "category": "General",
+            "priority": "Media", "status": "Pendiente", "image_url": "", "url": "",
+            "published_at": datetime.now(timezone.utc).isoformat(), "is_ai": False, "tags": ["lote-195"],
+        }
+        first = self.client.post("/api/noticias", headers=self.headers, json=base).json()
+        base["title"] = "Segunda acción editorial por lote 195"
+        second = self.client.post("/api/noticias", headers=self.headers, json=base).json()
+        base.update({"title": "Publicada protegida por lote 195", "status": "Pendiente"})
+        protected = self.client.post("/api/noticias", headers=self.headers, json=base).json()
+        with main.connection() as db:
+            db.execute("UPDATE noticias SET status = 'Publicada', editorial_state = 'Aprobada' WHERE id = ?", (protected["id"],))
+        ids = [first["id"], second["id"], protected["id"]]
+        try:
+            assigned = self.client.post(
+                "/api/flujo-editorial/lote", headers=self.headers,
+                json={"action": "assign", "news_ids": ids, "assigned_to": 1},
+            )
+            self.assertEqual(assigned.status_code, 200)
+            self.assertEqual(assigned.json()["updated"], 2)
+            self.assertEqual(assigned.json()["protected"], 1)
+
+            archived = self.client.post(
+                "/api/flujo-editorial/lote", headers=self.headers,
+                json={"action": "archive", "news_ids": [first["id"]]},
+            )
+            self.assertEqual(archived.json()["updated"], 1)
+            self.assertEqual(self.client.get(f"/api/noticias/{first['id']}", headers=self.headers).json()["status"], "Archivada")
+
+            deleted = self.client.post(
+                "/api/flujo-editorial/lote", headers=self.headers,
+                json={"action": "delete", "news_ids": [second["id"], protected["id"]]},
+            )
+            self.assertEqual(deleted.json()["updated"], 1)
+            self.assertEqual(deleted.json()["protected"], 1)
+            self.assertEqual(self.client.get(f"/api/noticias/{second['id']}", headers=self.headers).status_code, 404)
+            self.assertEqual(self.client.get(f"/api/noticias/{protected['id']}", headers=self.headers).status_code, 200)
+        finally:
+            with main.connection() as db:
+                db.execute("DELETE FROM noticias WHERE id IN (?, ?, ?)", ids)
+
     def test_editorial_board_filters_news_with_and_without_images(self):
         municipality = "Filtro Imagen 155"
         base = {
