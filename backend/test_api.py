@@ -420,6 +420,18 @@ class PulsoMonitorApiTests(unittest.TestCase):
             with main.connection() as db:
                 db.execute("DELETE FROM noticias WHERE id IN (?, ?)", (recent["id"], old["id"]))
 
+    def test_radar_coverage_rejects_wrong_state_and_normalizes_titles(self):
+        self.assertFalse(main.radar_item_matches_coverage(
+            "Temblor de 4.1 en San Marcos, Guerrero", "Autoridades de Guerrero informaron", "San Marcos"
+        ))
+        self.assertTrue(main.radar_item_matches_coverage(
+            "Obras nuevas en San Marcos", "El municipio de Jalisco informó los avances", "San Marcos"
+        ))
+        self.assertEqual(
+            main.normalized_news_title("Nueva obra vial en Tequila - El Informador"),
+            main.normalized_news_title("Nueva obra vial en Tequila | Notisistema"),
+        )
+
     def test_automations_permissions_execution_and_alerts(self):
         jobs = self.client.get("/api/automatizaciones", headers=self.headers)
         self.assertEqual(jobs.status_code, 200)
