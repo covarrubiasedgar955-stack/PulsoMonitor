@@ -1757,15 +1757,24 @@ def radar_item_matches_coverage(title: str, summary: str, municipality: str) -> 
 
 
 def classify_radar_content(title: str, summary: str, municipality: str) -> tuple[str, NewsPriority, list[str]]:
-    analysis = local_ai_analysis(AIAnalyzeRequest.model_construct(
-        source_text=f"{title}. {summary}", municipality=municipality,
-        source="Radar", tone="Informativo",
-    ))
-    category = "Gobierno" if analysis.category == "Política" else "Economía" if any(
-        term in folded(f"{title} {summary}")
-        for term in ("empleo", "empresa", "comercio", "economia", "inversion", "turismo")
-    ) else analysis.category
-    return category, analysis.priority, analysis.tags
+    text = folded(f"{title} {summary}")
+    categories = {
+        "Seguridad": ("accidente", "choque", "incendio", "policia", "detenido", "robo", "homicidio", "desaparecid", "proteccion civil"),
+        "Servicios": ("geiser", "fuga", "agua", "luz", "drenaje", "cierre vial", "transito", "obra", "recoleccion", "servicio"),
+        "Gobierno": ("ayuntamiento", "gobierno", "cabildo", "president", "regidor", "eleccion", "partido"),
+        "Economía": ("empleo", "empresa", "comercio", "economia", "inversion", "turismo", "hotel"),
+        "Deportes": ("futbol", "torneo", "partido", "equipo", "deportivo", "carrera"),
+        "Eventos": ("festival", "concierto", "feria", "celebracion", "agenda cultural", "evento"),
+        "Comunidad": ("municipio para vivir", "vecinos", "colonia", "comunidad", "escuela", "familias", "apoyo"),
+    }
+    scores = {category: sum(term in text for term in terms) for category, terms in categories.items()}
+    category = max(scores, key=scores.get) if max(scores.values(), default=0) else "General"
+    urgent = ("urgente", "evacua", "incendio", "accidente", "choque", "desaparecid", "homicidio", "explosion", "emergencia")
+    high = ("peligro", "alerta", "cierre", "precaucion", "afectacion", "suspendido", "fuga", "geiser", "detenido")
+    priority: NewsPriority = "Urgente" if any(term in text for term in urgent) else "Alta" if any(term in text for term in high) else "Baja" if category in {"General", "Comunidad", "Eventos"} else "Media"
+    matched = [term for terms in categories.values() for term in terms if term in text]
+    tags = list(dict.fromkeys([municipality.lower(), category.lower(), *matched, "radar"]))[:8]
+    return category, priority, tags
 
 
 def prune_automatic_drafts(max_per_municipality: int = 20, days: int = 7) -> int:
@@ -1922,11 +1931,17 @@ def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = No
     try:
         response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/1.1"})
         data = response.json()
-    except (httpx.HTTPError, ValueError) as error:
-        raise ValueError("No fue posible comunicarse con Meta.") from error
+    except httpx.TimeoutException as error:
+        raise ValueError("Meta tardó demasiado en responder; intenta nuevamente.") from error
+    except httpx.HTTPError as error:
+        raise ValueError("No hay conexión con Meta; revisa Internet y vuelve a intentar.") from error
+    except ValueError as error:
+        raise ValueError("Meta devolvió una respuesta no válida.") from error
     if not response.is_success or data.get("error"):
         api_error = data.get("error") or {}
         message = clean_feed_text(str(api_error.get("message") or "Meta rechazó la solicitud."), 350)
+        if str(api_error.get("code") or "") == "190":
+            message = "El token de Facebook venció o fue invalidado. Vuelve a conectar la página."
         raise ValueError(message)
     return data
 
@@ -2209,7 +2224,7 @@ def run_automation_job(key: AutomationKey, scheduled: bool = False) -> Automatio
                 result = scan_radar_sources()
                 message = f"{result.scanned_sources} fuentes revisadas · {result.detected} hallazgos nuevos · {result.imported} borradores creados."
                 if result.errors:
-                    message += f" {len(result.errors)} fuentes con error."
+                    message += " Fuentes con error: " + " | ".join(result.errors[:3])
                 should_notify = result.detected > 0 or result.imported > 0 or bool(result.errors)
             elif key == "geolocation":
                 message = geolocate_automation_batch()

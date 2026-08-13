@@ -447,6 +447,18 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(category, "Seguridad")
         self.assertEqual(priority, "Urgente")
         self.assertIn("seguridad", tags)
+        category, priority, _ = main.classify_radar_content(
+            "Aparece un géiser en plena vía pública en San Marcos",
+            "Autoridades descartan riesgos de momento.", "San Marcos",
+        )
+        self.assertEqual(category, "Servicios")
+        self.assertEqual(priority, "Alta")
+        category, priority, _ = main.classify_radar_content(
+            "¿Cuál es el mejor municipio para vivir en la Región Valles?",
+            "Tala destaca entre las comunidades de Jalisco.", "Tala",
+        )
+        self.assertEqual(category, "Comunidad")
+        self.assertEqual(priority, "Baja")
 
     def test_automations_permissions_execution_and_alerts(self):
         jobs = self.client.get("/api/automatizaciones", headers=self.headers)
