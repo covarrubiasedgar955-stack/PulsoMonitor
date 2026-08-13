@@ -711,6 +711,18 @@ class EditorialUpdateRequest(BaseModel):
         return value.strip()
 
 
+class EditorialBatchRequest(BaseModel):
+    action: Literal["assign", "archive", "delete"]
+    news_ids: list[int] = Field(min_length=1, max_length=200)
+    assigned_to: int | None = None
+
+
+class EditorialBatchResult(BaseModel):
+    requested: int
+    updated: int
+    protected: int
+
+
 class MapIncident(BaseModel):
     id: int
     title: str
@@ -3695,6 +3707,51 @@ def update_editorial_flow(
     }
     audit(user, labels[payload.action], "noticia", news_id, str(updated["title"]))
     return EditorialItem(**row_to_news(updated).model_dump(), assigned_name=updated["assigned_name"], approved_by_name=updated["approved_by_name"])
+
+
+@app.post("/api/flujo-editorial/lote", response_model=EditorialBatchResult)
+def update_editorial_batch(
+    payload: EditorialBatchRequest,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> EditorialBatchResult:
+    require_role(user, "Administrador", "Editor")
+    news_ids = list(dict.fromkeys(payload.news_ids))
+    placeholders = ",".join("?" for _ in news_ids)
+    now = utc_now()
+    with connection() as db:
+        rows = db.execute(
+            f"SELECT id, title, status, editorial_state, facebook_post_id FROM noticias WHERE id IN ({placeholders})",
+            news_ids,
+        ).fetchall()
+        editable = [
+            row for row in rows
+            if row["status"] not in ("Publicada", "Programada", "Archivada")
+            and row["editorial_state"] != "Aprobada" and not row["facebook_post_id"]
+        ]
+        editable_ids = [int(row["id"]) for row in editable]
+        if payload.action == "assign" and payload.assigned_to is not None:
+            target = db.execute("SELECT id FROM users WHERE id = ? AND active = 1", (payload.assigned_to,)).fetchone()
+            if target is None:
+                raise HTTPException(status_code=404, detail="El responsable seleccionado no está activo.")
+        if editable_ids:
+            editable_placeholders = ",".join("?" for _ in editable_ids)
+            if payload.action == "assign":
+                db.execute(
+                    f"UPDATE noticias SET assigned_to = ?, updated_at = ? WHERE id IN ({editable_placeholders})",
+                    (payload.assigned_to, now, *editable_ids),
+                )
+            elif payload.action == "archive":
+                db.execute(
+                    f"UPDATE noticias SET status = 'Archivada', updated_at = ? WHERE id IN ({editable_placeholders})",
+                    (now, *editable_ids),
+                )
+            else:
+                db.execute(f"DELETE FROM radar_items WHERE imported_news_id IN ({editable_placeholders})", editable_ids)
+                db.execute(f"DELETE FROM noticias WHERE id IN ({editable_placeholders})", editable_ids)
+    updated = len(editable_ids)
+    protected = len(news_ids) - updated
+    audit(user, f"Acción editorial por lote: {payload.action}", "noticia", ",".join(map(str, editable_ids)), f"{updated} actualizadas; {protected} protegidas")
+    return EditorialBatchResult(requested=len(news_ids), updated=updated, protected=protected)
 
 
 @app.get("/api/noticias", response_model=NewsList)
