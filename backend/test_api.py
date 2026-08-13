@@ -477,9 +477,12 @@ class PulsoMonitorApiTests(unittest.TestCase):
             important = self.client.get(
                 "/api/noticias", headers=self.headers, params={"search": "Orden prueba 153", "sort": "priority_desc"}
             ).json()["items"]
+            editorial_default = self.client.get("/api/flujo-editorial", headers=self.headers).json()["items"]
             self.assertEqual(newest[0]["id"], recent["id"])
             self.assertEqual(oldest[0]["id"], old["id"])
             self.assertEqual(important[0]["priority"], "Urgente")
+            editorial_ids = [item["id"] for item in editorial_default]
+            self.assertLess(editorial_ids.index(old["id"]), editorial_ids.index(recent["id"]))
         finally:
             with main.connection() as db:
                 db.execute("DELETE FROM noticias WHERE id IN (?, ?)", (recent["id"], old["id"]))

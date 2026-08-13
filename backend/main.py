@@ -3551,7 +3551,7 @@ def editorial_board(
     state: str = "",
     assigned_to: int | None = None,
     municipality: str = "",
-    sort: NewsSort = "newest",
+    sort: NewsSort = "priority_desc",
     image_filter: ImageFilter = "all",
 ) -> EditorialBoard:
     clauses = ["n.status != 'Archivada'"]
