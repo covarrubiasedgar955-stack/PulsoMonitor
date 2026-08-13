@@ -107,7 +107,7 @@ export default function RadarPage() {
     try {
       const result = await api.scanRadar(sourceId);
       const detected = `${result.detected} publicación${result.detected === 1 ? " nueva" : "es nuevas"}`;
-      const cleaned = result.cleaned ? ` · ${result.cleaned} hallazgo${result.cleaned === 1 ? " vencido retirado" : "s vencidos retirados"}` : "";
+      const cleaned = result.cleaned ? ` · ${result.cleaned} hallazgo${result.cleaned === 1 ? " descartado" : "s antiguos o fuera de cobertura descartados"}` : "";
       setMessage(`Escaneo terminado: ${detected} · ${result.imported} borrador${result.imported === 1 ? " creado" : "es creados"}${cleaned}.`);
       if (result.errors.length) setError(result.errors.join(" · "));
       await load();
