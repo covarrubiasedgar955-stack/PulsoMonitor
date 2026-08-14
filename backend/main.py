@@ -2154,12 +2154,25 @@ GENERIC_IMAGE_HINTS = (
     "default-image", "default_image", "site-logo", "site_logo", "brand-logo", "brand_logo",
 )
 
+GENERIC_IMAGE_HOSTS = (
+    "googleusercontent.com",
+    "gstatic.com",
+    "news.google.com",
+)
+
 
 def looks_generic_news_image(image_url: str) -> bool:
     lowered = unescape(str(image_url or "")).lower()
     if not lowered:
         return True
-    path = urlparse(lowered).path
+    try:
+        parsed = urlparse(lowered)
+    except ValueError:
+        return True
+    hostname = (parsed.hostname or "").removeprefix("www.")
+    if any(hostname == host or hostname.endswith(f".{host}") for host in GENERIC_IMAGE_HOSTS):
+        return True
+    path = parsed.path
     filename = path.rsplit("/", 1)[-1]
     return any(hint in lowered for hint in GENERIC_IMAGE_HINTS) or filename.startswith(("logo.", "logo-", "logo_", "icon."))
 
