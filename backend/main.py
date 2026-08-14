@@ -2204,6 +2204,44 @@ def news_image_fingerprint(image_url: str) -> str:
         return ""
 
 
+def news_image_looks_like_logo(image_url: str) -> bool:
+    """Detect flat, small or transparent brand artwork without rejecting normal photographs."""
+    if not image_url:
+        return True
+    try:
+        image_bytes = fetch_feed_bytes(image_url)
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            width, height = image.size
+            if width < 180 or height < 180:
+                return True
+
+            has_transparency = image.mode in {"RGBA", "LA"} or "transparency" in image.info
+            if has_transparency:
+                alpha = image.convert("RGBA").getchannel("A").resize((96, 96))
+                transparent_share = sum(1 for value in alpha.getdata() if value < 245) / (96 * 96)
+                if transparent_share >= 0.04:
+                    return True
+
+            thumbnail = image.convert("RGB")
+            thumbnail.thumbnail((128, 128))
+            grayscale_entropy = thumbnail.convert("L").entropy()
+            quantized = thumbnail.quantize(colors=32)
+            color_counts = quantized.getcolors() or []
+            pixels = max(1, thumbnail.width * thumbnail.height)
+            dominant_share = max((count for count, _ in color_counts), default=0) / pixels
+            aspect_ratio = width / max(1, height)
+
+            if grayscale_entropy < 3.25:
+                return True
+            if 0.72 <= aspect_ratio <= 1.40 and grayscale_entropy < 5.15 and dominant_share >= 0.24:
+                return True
+            if dominant_share >= 0.58 and grayscale_entropy < 5.50:
+                return True
+            return False
+    except (ValueError, httpx.HTTPError, UnidentifiedImageError, OSError, ImportError, ZeroDivisionError):
+        return False
+
+
 def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
     """Replace generic covers when possible and otherwise show an honest empty state."""
     with connection() as db:
@@ -2245,6 +2283,16 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
             fingerprint_counts[fingerprint] = fingerprint_counts.get(fingerprint, 0) + 1
     repeated_fingerprints = {value for value, count in fingerprint_counts.items() if count >= 2}
 
+    visual_generic_cache: dict[str, bool] = {}
+
+    def is_generic_image(image_url: str) -> bool:
+        if looks_generic_news_image(image_url):
+            return True
+        identity = news_image_identity(image_url) or image_url
+        if identity not in visual_generic_cache:
+            visual_generic_cache[identity] = news_image_looks_like_logo(image_url)
+        return visual_generic_cache[identity]
+
     def is_repeated_image(image_url: str) -> bool:
         identity = news_image_identity(image_url)
         return identity in repeated or bool(fingerprint_cache.get(identity) in repeated_fingerprints)
@@ -2253,7 +2301,7 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
         row for row in all_rows
         if not row["current_image"]
         or is_repeated_image(row["current_image"])
-        or looks_generic_news_image(row["current_image"])
+        or is_generic_image(row["current_image"])
     ][:max(1, min(limit, 200))]
 
     recovered = 0
@@ -2261,17 +2309,17 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
     for row in rows:
         current_image = row["current_image"]
         current_is_generic = bool(current_image) and (
-            is_repeated_image(current_image) or looks_generic_news_image(current_image)
+            is_repeated_image(current_image) or is_generic_image(current_image)
         )
         image_url = ""
         for candidate in (row["facebook_image"], row["radar_image"]):
             accepted = valid_public_image_url(candidate)
-            if accepted and accepted != current_image and not is_repeated_image(accepted) and not looks_generic_news_image(accepted):
+            if accepted and accepted != current_image and not is_repeated_image(accepted) and not is_generic_image(accepted):
                 image_url = accepted
                 break
         if not image_url and row["url"]:
             accepted = fetch_open_graph_image(row["url"])
-            if accepted and accepted != current_image and not is_repeated_image(accepted) and not looks_generic_news_image(accepted):
+            if accepted and accepted != current_image and not is_repeated_image(accepted) and not is_generic_image(accepted):
                 image_url = accepted
         with connection() as db:
             if image_url:
@@ -4093,6 +4141,7 @@ def publish_news_to_facebook(
             parsed_image_url.scheme in {"http", "https"}
             and parsed_image_url.hostname
             and not looks_generic_news_image(raw_image_url)
+            and not news_image_looks_like_logo(raw_image_url)
         )
     except ValueError:
         has_publishable_image = False
