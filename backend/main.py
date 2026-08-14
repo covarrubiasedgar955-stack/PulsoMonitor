@@ -4073,7 +4073,26 @@ def publish_news_to_facebook(
         raise HTTPException(status_code=400, detail="La noticia no tiene contenido suficiente para publicarse.")
 
     now_dt = datetime.now(timezone.utc)
-    params = {"message": message}
+    raw_image_url = unescape(str(row["image_url"] or "")).strip()
+    try:
+        parsed_image_url = urlparse(raw_image_url)
+        has_publishable_image = bool(
+            parsed_image_url.scheme in {"http", "https"}
+            and parsed_image_url.hostname
+            and not looks_generic_news_image(raw_image_url)
+        )
+    except ValueError:
+        has_publishable_image = False
+
+    if has_publishable_image:
+        facebook_endpoint = f"{page_id}/photos"
+        params = {"url": raw_image_url, "caption": message}
+    else:
+        facebook_endpoint = f"{page_id}/feed"
+        params = {"message": message}
+        source_url = unescape(str(row["url"] or "")).strip()
+        if source_url:
+            params["link"] = source_url
     scheduled_at: str | None = None
     target_status: NewsStatus = "Publicada"
     published_at: str | None = now_dt.isoformat(timespec="seconds")
@@ -4092,7 +4111,7 @@ def publish_news_to_facebook(
         published_at = None
 
     try:
-        result = facebook_graph_post(f"{page_id}/feed", token, params)
+        result = facebook_graph_post(facebook_endpoint, token, params)
     except ValueError as error:
         raise HTTPException(
             status_code=400,
@@ -4102,7 +4121,7 @@ def publish_news_to_facebook(
             ),
         ) from None
 
-    facebook_post_id = clean_feed_text(str(result.get("id") or ""), 180)
+    facebook_post_id = clean_feed_text(str(result.get("post_id") or result.get("id") or ""), 180)
     if not facebook_post_id:
         raise HTTPException(status_code=502, detail="Meta aceptó la solicitud, pero no devolvió el identificador de la publicación.")
 
