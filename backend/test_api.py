@@ -879,7 +879,30 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertFalse(published.json()["scheduled"])
         self.assertEqual(published.json()["news"]["status"], "Publicada")
         self.assertEqual(published.json()["news"]["facebook_post_id"], "123456_900")
+        self.assertEqual(publish_mock.call_args.args[0], "123456/feed")
         self.assertIn("#PulsoTequila", publish_mock.call_args.args[2]["message"])
+
+        image_payload = {
+            **payload,
+            "title": "Noticia aprobada con fotografía",
+            "image_url": "https://cdn.example.com/noticias/foto-principal.jpg",
+            "url": "https://example.com/noticias/con-fotografia",
+        }
+        image_news = self.client.post("/api/noticias", headers=self.headers, json=image_payload).json()
+        self.client.put(f"/api/noticias/{image_news['id']}/flujo-editorial", headers=self.headers, json={"action": "request_review", "assigned_to": None, "note": ""})
+        self.client.put(f"/api/noticias/{image_news['id']}/flujo-editorial", headers=self.headers, json={"action": "approve", "assigned_to": None, "note": ""})
+        with patch.object(main, "facebook_graph_post", return_value={"id": "photo_902", "post_id": "123456_902"}) as photo_mock:
+            photo_published = self.client.post(
+                f"/api/noticias/{image_news['id']}/publicar-facebook",
+                headers=self.headers,
+                json={"scheduled_at": None},
+            )
+        self.assertEqual(photo_published.status_code, 200)
+        self.assertEqual(photo_published.json()["facebook_post_id"], "123456_902")
+        self.assertEqual(photo_mock.call_args.args[0], "123456/photos")
+        self.assertEqual(photo_mock.call_args.args[2]["url"], image_payload["image_url"])
+        self.assertIn("Noticia aprobada con fotografía", photo_mock.call_args.args[2]["caption"])
+        self.assertNotIn("message", photo_mock.call_args.args[2])
 
         scheduled_news = self.client.post("/api/noticias", headers=self.headers, json=payload).json()
         self.client.put(f"/api/noticias/{scheduled_news['id']}/flujo-editorial", headers=self.headers, json={"action": "request_review", "assigned_to": None, "note": ""})
