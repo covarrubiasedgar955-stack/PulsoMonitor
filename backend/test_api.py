@@ -497,10 +497,17 @@ class PulsoMonitorApiTests(unittest.TestCase):
             self.assertGreaterEqual(discarded, 0)
             updated = self.client.get(f"/api/noticias/{news['id']}", headers=self.headers).json()
             self.assertEqual(updated["image_url"], "https://images.example.org/portada.jpg")
+
         finally:
             with main.connection() as db:
                 db.execute("DELETE FROM facebook_posts WHERE external_id = ?", (external_id,))
                 db.execute("DELETE FROM noticias WHERE id = ?", (news["id"],))
+
+    def test_google_news_brand_images_are_generic(self):
+        self.assertTrue(main.looks_generic_news_image("https://lh3.googleusercontent.com/a-/google-news-logo=s512"))
+        self.assertTrue(main.looks_generic_news_image("https://ssl.gstatic.com/news-static/img/logo.png"))
+        self.assertTrue(main.looks_generic_news_image("https://news.google.com/favicon.ico"))
+        self.assertFalse(main.looks_generic_news_image("https://imagenes.periodico.mx/noticias/operativo-policial.jpg"))
 
     def test_image_backfill_discards_repeated_cover_without_replacement(self):
         ids = []
