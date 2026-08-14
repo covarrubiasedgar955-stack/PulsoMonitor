@@ -1,3 +1,4 @@
+import io
 import os
 import secrets
 import sqlite3
@@ -23,6 +24,7 @@ os.environ.pop("FACEBOOK_PAGE_ID", None)
 os.environ.pop("FACEBOOK_PAGE_NAME", None)
 
 from fastapi.testclient import TestClient  # noqa: E402
+from PIL import Image, ImageDraw  # noqa: E402
 import main  # noqa: E402
 from main import app  # noqa: E402
 
@@ -508,6 +510,27 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertTrue(main.looks_generic_news_image("https://ssl.gstatic.com/news-static/img/logo.png"))
         self.assertTrue(main.looks_generic_news_image("https://news.google.com/favicon.ico"))
         self.assertFalse(main.looks_generic_news_image("https://imagenes.periodico.mx/noticias/operativo-policial.jpg"))
+
+    def test_visual_logo_detector_distinguishes_logo_from_photo(self):
+        logo = Image.new("RGB", (640, 640), "white")
+        logo_draw = ImageDraw.Draw(logo)
+        logo_draw.rectangle((120, 160, 520, 480), fill="#2563eb")
+        logo_draw.rectangle((260, 240, 520, 320), fill="white")
+        logo_bytes = io.BytesIO()
+        logo.save(logo_bytes, format="PNG")
+
+        photo = Image.new("RGB", (900, 520))
+        photo_pixels = photo.load()
+        for y in range(photo.height):
+            for x in range(photo.width):
+                photo_pixels[x, y] = ((x * 17 + y * 7) % 256, (x * 5 + y * 19) % 256, (x * 11 + y * 13) % 256)
+        photo_bytes = io.BytesIO()
+        photo.save(photo_bytes, format="JPEG", quality=88)
+
+        with patch.object(main, "fetch_feed_bytes", return_value=logo_bytes.getvalue()):
+            self.assertTrue(main.news_image_looks_like_logo("https://medio.example/logo.png"))
+        with patch.object(main, "fetch_feed_bytes", return_value=photo_bytes.getvalue()):
+            self.assertFalse(main.news_image_looks_like_logo("https://medio.example/fotografia.jpg"))
 
     def test_image_backfill_discards_repeated_cover_without_replacement(self):
         ids = []
