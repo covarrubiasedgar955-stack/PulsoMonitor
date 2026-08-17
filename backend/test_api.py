@@ -146,7 +146,9 @@ class PulsoMonitorApiTests(unittest.TestCase):
           <description>El dispositivo se aplicará en la zona metropolitana.</description>
           <link>https://example.com/fuera-de-cobertura</link><pubDate>{published}</pubDate></item>
         </channel></rss>""".encode("utf-8")
-        with patch.object(main, "fetch_feed_bytes", return_value=feed), patch.object(main, "public_feed_url", return_value=None):
+        with patch.object(main, "fetch_feed_bytes", return_value=feed), patch.object(
+            main, "public_feed_url", return_value=None
+        ), patch.object(main, "news_image_looks_like_logo", return_value=False):
             result = self.client.post(f"/api/radar/escanear?source_id={source['id']}", headers=self.headers)
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()["detected"], 1)
@@ -533,6 +535,17 @@ class PulsoMonitorApiTests(unittest.TestCase):
             self.assertFalse(main.news_image_looks_like_logo("https://medio.example/fotografia.jpg"))
         with patch.object(main, "fetch_feed_bytes", side_effect=ValueError("La imagen expiró")):
             self.assertTrue(main.news_image_looks_like_logo("https://medio.example/imagen-vencida.jpg"))
+
+        google_logo = Image.new("RGB", (900, 520), "white")
+        google_draw = ImageDraw.Draw(google_logo)
+        google_draw.rectangle((90, 170, 500, 440), fill=(66, 133, 244))
+        google_draw.rectangle((500, 170, 780, 260), fill=(234, 67, 53))
+        google_draw.rectangle((500, 260, 780, 350), fill=(251, 188, 5))
+        google_draw.rectangle((500, 350, 780, 440), fill=(52, 168, 83))
+        google_bytes = io.BytesIO()
+        google_logo.save(google_bytes, format="PNG")
+        with patch.object(main, "fetch_feed_bytes", return_value=google_bytes.getvalue()):
+            self.assertTrue(main.news_image_looks_like_logo("https://medio.example/portada-aleatoria.png"))
 
     def test_image_backfill_discards_repeated_cover_without_replacement(self):
         ids = []
@@ -1200,7 +1213,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
         </channel></rss>""".encode("utf-8")
         with patch.object(main, "fetch_feed_bytes", return_value=feed), patch.object(
             main, "fetch_open_graph_image", return_value="https://example.com/portada-og.jpg"
-        ):
+        ), patch.object(main, "news_image_looks_like_logo", return_value=False):
             first_scan = self.client.post(f"/api/radar/escanear?source_id={source_id}", headers=self.headers)
             second_scan = self.client.post(f"/api/radar/escanear?source_id={source_id}", headers=self.headers)
         self.assertEqual(first_scan.status_code, 200)

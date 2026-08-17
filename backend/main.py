@@ -1902,6 +1902,16 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
     detected = 0
     imported = 0
     open_graph_budget = 10
+    image_validation_cache: dict[str, bool] = {}
+
+    def usable_image(image_url: str) -> str:
+        if not image_url or looks_generic_news_image(image_url):
+            return ""
+        identity = news_image_identity(image_url) or image_url
+        if identity not in image_validation_cache:
+            image_validation_cache[identity] = not news_image_looks_like_logo(image_url)
+        return image_url if image_validation_cache[identity] else ""
+
     now = utc_now()
     with connection() as db:
         for entry in parsed.entries[:80]:
@@ -1924,14 +1934,16 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
             summary = clean_feed_text(entry.get("summary") or entry.get("description"), 2_000)
             if bool(source["managed"]) and not radar_item_matches_coverage(title, summary, source["municipality"]):
                 continue
-            image_url = feed_image_url(entry, link)
             existing = db.execute(
                 "SELECT id FROM radar_items WHERE source_id = ? AND external_id = ?",
                 (source["id"], external_id),
             ).fetchone()
-            if existing is None and not image_url and link and open_graph_budget > 0:
+            if existing is not None:
+                continue
+            image_url = usable_image(feed_image_url(entry, link))
+            if not image_url and link and open_graph_budget > 0:
                 open_graph_budget -= 1
-                image_url = fetch_open_graph_image(link)
+                image_url = usable_image(fetch_open_graph_image(link))
             cursor = db.execute(
                 """
                 INSERT OR IGNORE INTO radar_items (
@@ -2224,6 +2236,7 @@ def news_image_looks_like_logo(image_url: str) -> bool:
 
             thumbnail = image.convert("RGB")
             thumbnail.thumbnail((128, 128))
+            rgb_pixels = list(thumbnail.get_flattened_data())
             grayscale_entropy = thumbnail.convert("L").entropy()
             quantized = thumbnail.quantize(colors=32)
             color_counts = quantized.getcolors() or []
@@ -2231,6 +2244,17 @@ def news_image_looks_like_logo(image_url: str) -> bool:
             dominant_share = max((count for count, _ in color_counts), default=0) / pixels
             aspect_ratio = width / max(1, height)
 
+            white_share = sum(1 for red, green, blue in rgb_pixels if red > 225 and green > 225 and blue > 225) / pixels
+            google_blue = sum(1 for red, green, blue in rgb_pixels if blue > 145 and blue > red * 1.35 and blue > green * 1.10) / pixels
+            google_red = sum(1 for red, green, blue in rgb_pixels if red > 165 and red > green * 1.45 and red > blue * 1.30) / pixels
+            google_yellow = sum(1 for red, green, blue in rgb_pixels if red > 175 and green > 125 and blue < 115) / pixels
+            google_green = sum(1 for red, green, blue in rgb_pixels if green > 115 and green > red * 1.35 and green > blue * 1.10) / pixels
+            google_colors = sum(
+                share >= 0.018 for share in (google_blue, google_red, google_yellow, google_green)
+            )
+
+            if white_share >= 0.12 and google_colors >= 3 and grayscale_entropy < 6.40:
+                return True
             if grayscale_entropy < 3.25:
                 return True
             if 0.72 <= aspect_ratio <= 1.40 and grayscale_entropy < 5.15 and dominant_share >= 0.24:
