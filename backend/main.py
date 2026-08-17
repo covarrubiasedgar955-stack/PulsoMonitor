@@ -1657,6 +1657,108 @@ def fetch_feed_bytes(url: str) -> bytes:
     return content
 
 
+def google_news_article_id(url: str) -> str:
+    parsed = urlparse(url)
+    if (parsed.hostname or "").lower() != "news.google.com":
+        return ""
+    match = re.search(r"/(?:rss/)?articles/([^/?#]+)", parsed.path)
+    return match.group(1) if match else ""
+
+
+def external_article_url(value: str) -> str:
+    candidate = unescape(str(value or "").strip().replace(r"\\/", "/").replace(r"\/", "/"))
+    candidate = candidate.replace(r"\\u003d", "=").replace(r"\u003d", "=")
+    candidate = candidate.replace(r"\\u0026", "&").replace(r"\u0026", "&")
+    try:
+        parsed = urlparse(candidate)
+        hostname = (parsed.hostname or "").lower()
+        if parsed.scheme not in {"http", "https"} or not hostname:
+            return ""
+        blocked = (
+            "google.com", "googleusercontent.com", "gstatic.com", "youtube.com",
+            "facebook.com", "instagram.com", "x.com", "twitter.com",
+        )
+        if any(hostname == item or hostname.endswith(f".{item}") for item in blocked):
+            return ""
+        public_feed_url(candidate)
+        return candidate[:1200]
+    except ValueError:
+        return ""
+
+
+def decode_google_news_id(article_id: str) -> str:
+    try:
+        decoded = base64.urlsafe_b64decode(article_id + "=" * (-len(article_id) % 4))
+    except (ValueError, TypeError):
+        return ""
+    match = re.search(rb"https?://[^\x00-\x20\x7f]+", decoded)
+    return external_article_url(match.group(0).decode("utf-8", errors="ignore")) if match else ""
+
+
+def find_external_url_in_google_payload(payload: str) -> str:
+    normalized = unescape(payload).replace(r"\\/", "/").replace(r"\/", "/")
+    normalized = normalized.replace(r"\\u003d", "=").replace(r"\u003d", "=")
+    normalized = normalized.replace(r"\\u0026", "&").replace(r"\u0026", "&")
+    for match in re.finditer(r"https?://[^\s\"'<>\\]+", normalized):
+        accepted = external_article_url(match.group(0))
+        if accepted:
+            return accepted
+    return ""
+
+
+def resolve_google_news_url(url: str) -> str:
+    article_id = google_news_article_id(url)
+    if not article_id:
+        return url
+
+    decoded = decode_google_news_id(article_id)
+    if decoded:
+        return decoded
+
+    try:
+        document, _ = fetch_public_document(url)
+        html_text = document.decode("utf-8", errors="ignore")
+    except (ValueError, httpx.HTTPError, UnicodeError):
+        return url
+
+    embedded = find_external_url_in_google_payload(html_text)
+    if embedded:
+        return embedded
+
+    signature = re.search(r'data-n-a-sg=["\']([^"\']+)', html_text)
+    timestamp = re.search(r'data-n-a-ts=["\'](\d+)', html_text)
+    if not signature or not timestamp:
+        return url
+
+    request_payload = [
+        "garturlreq",
+        [["es-419", "MX", ["FINANCE_TOP_INDICES", "WEB_TEST_1_0_0"], None, None, 1, 1,
+          "MX:es-419", None, 180, None, None, None, None, None, 0, None, None,
+          [1608992183, 723341000]], "es-419", "MX", 1, [2, 3, 4, 8], 1, 0,
+         "655000234", 0, 0, None, 0],
+        article_id,
+        int(timestamp.group(1)),
+        signature.group(1),
+    ]
+    rpc = [["Fbv4je", json.dumps(request_payload, separators=(",", ":")), None, "generic"]]
+    try:
+        endpoint = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
+        public_feed_url(endpoint)
+        response = httpx.post(
+            endpoint,
+            data={"f.req": json.dumps([rpc], separators=(",", ":"))},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0",
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        return find_external_url_in_google_payload(response.text) or url
+    except (ValueError, httpx.HTTPError):
+        return url
+
+
 def feed_published_at(entry: dict) -> str | None:
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if not parsed:
@@ -1707,7 +1809,8 @@ def feed_image_url(entry: dict, link: str) -> str:
 
 def fetch_open_graph_image(url: str) -> str:
     try:
-        document, final_url = fetch_public_document(url)
+        article_url = resolve_google_news_url(url)
+        document, final_url = fetch_public_document(article_url)
         html_text = document.decode("utf-8", errors="ignore")
     except (ValueError, httpx.HTTPError, UnicodeError):
         return ""
