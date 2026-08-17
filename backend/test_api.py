@@ -1,3 +1,4 @@
+import base64
 import io
 import os
 import secrets
@@ -522,6 +523,36 @@ class PulsoMonitorApiTests(unittest.TestCase):
         ), patch.object(main, "public_feed_url", return_value=None):
             image_url = main.fetch_open_graph_image("https://news.google.com/rss/articles/identificador")
         self.assertEqual(image_url, "https://periodico.example/media/foto-real.jpg")
+
+    def test_google_news_old_identifier_decodes_publisher_url(self):
+        encoded = base64.urlsafe_b64encode(
+            b'\x08\x13"https://periodico.example/noticias/reporte-local\xd2\x01\x00'
+        ).decode().rstrip("=")
+        with patch.object(main, "public_feed_url", return_value=None):
+            resolved = main.resolve_google_news_url(f"https://news.google.com/rss/articles/{encoded}")
+        self.assertEqual(resolved, "https://periodico.example/noticias/reporte-local")
+
+    def test_google_news_batch_payload_extracts_publisher_url(self):
+        payload = r'''
+        )]}\'
+        [["wrb.fr","Fbv4je","[\"garturlres\",\"https://periodico.example/noticias/operativo?x=1\\u0026y=2\"]",null,null,null,"generic"]]
+        '''
+        with patch.object(main, "public_feed_url", return_value=None):
+            self.assertEqual(
+                main.find_external_url_in_google_payload(payload),
+                "https://periodico.example/noticias/operativo?x=1&y=2",
+            )
+
+    def test_open_graph_image_fetches_resolved_google_news_article(self):
+        document = b'<meta property="og:image" content="https://cdn.periodico.example/foto.jpg">'
+        with patch.object(
+            main, "resolve_google_news_url", return_value="https://periodico.example/noticia"
+        ) as resolver, patch.object(
+            main, "fetch_public_document", return_value=(document, "https://periodico.example/noticia")
+        ), patch.object(main, "public_feed_url", return_value=None):
+            image_url = main.fetch_open_graph_image("https://news.google.com/rss/articles/nuevo")
+        resolver.assert_called_once()
+        self.assertEqual(image_url, "https://cdn.periodico.example/foto.jpg")
 
     def test_visual_logo_detector_distinguishes_logo_from_photo(self):
         logo = Image.new("RGB", (640, 640), "white")
