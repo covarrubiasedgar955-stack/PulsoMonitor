@@ -492,7 +492,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
                 )
             with patch.object(main, "valid_public_image_url", side_effect=lambda value, base_url="": value or ""), patch.object(
                 main, "fetch_open_graph_image", return_value=""
-            ):
+            ), patch.object(main, "news_image_looks_like_logo", return_value=False):
                 checked, recovered, discarded = main.backfill_news_images(limit=200)
             self.assertGreaterEqual(checked, 1)
             self.assertGreaterEqual(recovered, 1)
@@ -531,6 +531,8 @@ class PulsoMonitorApiTests(unittest.TestCase):
             self.assertTrue(main.news_image_looks_like_logo("https://medio.example/logo.png"))
         with patch.object(main, "fetch_feed_bytes", return_value=photo_bytes.getvalue()):
             self.assertFalse(main.news_image_looks_like_logo("https://medio.example/fotografia.jpg"))
+        with patch.object(main, "fetch_feed_bytes", side_effect=ValueError("La imagen expiró")):
+            self.assertTrue(main.news_image_looks_like_logo("https://medio.example/imagen-vencida.jpg"))
 
     def test_image_backfill_discards_repeated_cover_without_replacement(self):
         ids = []
@@ -921,7 +923,9 @@ class PulsoMonitorApiTests(unittest.TestCase):
         image_news = self.client.post("/api/noticias", headers=self.headers, json=image_payload).json()
         self.client.put(f"/api/noticias/{image_news['id']}/flujo-editorial", headers=self.headers, json={"action": "request_review", "assigned_to": None, "note": ""})
         self.client.put(f"/api/noticias/{image_news['id']}/flujo-editorial", headers=self.headers, json={"action": "approve", "assigned_to": None, "note": ""})
-        with patch.object(main, "facebook_graph_post", return_value={"id": "photo_902", "post_id": "123456_902"}) as photo_mock:
+        with patch.object(main, "news_image_looks_like_logo", return_value=False), patch.object(
+            main, "facebook_graph_post", return_value={"id": "photo_902", "post_id": "123456_902"}
+        ) as photo_mock:
             photo_published = self.client.post(
                 f"/api/noticias/{image_news['id']}/publicar-facebook",
                 headers=self.headers,
