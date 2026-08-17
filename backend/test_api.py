@@ -513,6 +513,16 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertTrue(main.looks_generic_news_image("https://news.google.com/favicon.ico"))
         self.assertFalse(main.looks_generic_news_image("https://imagenes.periodico.mx/noticias/operativo-policial.jpg"))
 
+    def test_open_graph_image_uses_final_article_url_after_redirect(self):
+        document = b'<html><head><meta property="og:image" content="/media/foto-real.jpg"></head></html>'
+        with patch.object(
+            main,
+            "fetch_public_document",
+            return_value=(document, "https://periodico.example/noticias/reporte-local"),
+        ), patch.object(main, "public_feed_url", return_value=None):
+            image_url = main.fetch_open_graph_image("https://news.google.com/rss/articles/identificador")
+        self.assertEqual(image_url, "https://periodico.example/media/foto-real.jpg")
+
     def test_visual_logo_detector_distinguishes_logo_from_photo(self):
         logo = Image.new("RGB", (640, 640), "white")
         logo_draw = ImageDraw.Draw(logo)
