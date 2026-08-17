@@ -1627,10 +1627,16 @@ def public_feed_url(value: str) -> None:
             raise ValueError("Por seguridad, el Radar solo consulta fuentes públicas.")
 
 
-def fetch_feed_bytes(url: str) -> bytes:
+def fetch_public_document(url: str) -> tuple[bytes, str]:
     current_url = url
-    with httpx.Client(timeout=15, follow_redirects=False, headers={"User-Agent": "PulsoMonitor/0.3 (+radar editorial)"}) as client:
-        for _ in range(4):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36 PulsoMonitor/1.10",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "es-MX,es;q=0.9,en;q=0.6",
+    }
+    with httpx.Client(timeout=15, follow_redirects=False, headers=headers) as client:
+        for _ in range(8):
             public_feed_url(current_url)
             response = client.get(current_url)
             if response.status_code in {301, 302, 303, 307, 308}:
@@ -1642,8 +1648,13 @@ def fetch_feed_bytes(url: str) -> bytes:
             response.raise_for_status()
             if len(response.content) > 2_500_000:
                 raise ValueError("La fuente supera el tamaño permitido de 2.5 MB.")
-            return response.content
+            return response.content, current_url
     raise ValueError("La fuente realizó demasiadas redirecciones.")
+
+
+def fetch_feed_bytes(url: str) -> bytes:
+    content, _ = fetch_public_document(url)
+    return content
 
 
 def feed_published_at(entry: dict) -> str | None:
@@ -1696,14 +1707,15 @@ def feed_image_url(entry: dict, link: str) -> str:
 
 def fetch_open_graph_image(url: str) -> str:
     try:
-        html_text = fetch_feed_bytes(url).decode("utf-8", errors="ignore")
+        document, final_url = fetch_public_document(url)
+        html_text = document.decode("utf-8", errors="ignore")
     except (ValueError, httpx.HTTPError, UnicodeError):
         return ""
     for tag in re.findall(r"<meta\b[^>]*>", html_text, flags=re.IGNORECASE):
         name = re.search(r"\b(?:property|name)\s*=\s*['\"]([^'\"]+)", tag, flags=re.IGNORECASE)
         content = re.search(r"\bcontent\s*=\s*['\"]([^'\"]+)", tag, flags=re.IGNORECASE)
         if name and content and name.group(1).lower() in {"og:image", "og:image:url", "twitter:image"}:
-            accepted = valid_public_image_url(content.group(1), url)
+            accepted = valid_public_image_url(content.group(1), final_url)
             if accepted:
                 return accepted
     return ""
