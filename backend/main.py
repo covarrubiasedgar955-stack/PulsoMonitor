@@ -2205,7 +2205,7 @@ def news_image_fingerprint(image_url: str) -> str:
 
 
 def news_image_looks_like_logo(image_url: str) -> bool:
-    """Detect flat, small or transparent brand artwork without rejecting normal photographs."""
+    """Reject brand artwork and image URLs that can no longer be downloaded."""
     if not image_url:
         return True
     try:
@@ -2239,7 +2239,7 @@ def news_image_looks_like_logo(image_url: str) -> bool:
                 return True
             return False
     except (ValueError, httpx.HTTPError, UnidentifiedImageError, OSError, ImportError, ZeroDivisionError):
-        return False
+        return True
 
 
 def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
