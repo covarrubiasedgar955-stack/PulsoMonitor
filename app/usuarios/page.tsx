@@ -1,5 +1,6 @@
 "use client";
 
+import { APP_VERSION } from "@/lib/version";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import type { UserCreateInput, UserInfo, UserRecord, UserRole } from "@/types/news";
@@ -143,7 +144,7 @@ export default function UsersPage() {
   return (
     <main>
       <div className="page-heading">
-        <div><p className="eyebrow">VERSIÓN 1.11.2 · EQUIPO</p><h1>Usuarios</h1><p>Controla quién entra a Pulso Monitor y qué acciones puede realizar.</p></div>
+        <div><p className="eyebrow">VERSIÓN {APP_VERSION} · EQUIPO</p><h1>Usuarios</h1><p>Controla quién entra a Pulso Monitor y qué acciones puede realizar.</p></div>
         <button className="button primary" onClick={() => open()}>+ Nuevo usuario</button>
       </div>
 
