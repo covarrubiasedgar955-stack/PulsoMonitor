@@ -1,5 +1,6 @@
 "use client";
 
+import { APP_VERSION } from "@/lib/version";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import type { AnalyticsPoint, AnalyticsReport } from "@/types/news";
@@ -105,7 +106,7 @@ export default function AnalyticsPage() {
     <main>
       <div className="page-heading analytics-heading">
         <div>
-          <p className="eyebrow">VERSIÓN 1.11.2 · INTELIGENCIA EDITORIAL</p>
+          <p className="eyebrow">VERSIÓN {APP_VERSION} · INTELIGENCIA EDITORIAL</p>
           <h1>Estadísticas</h1>
           <p>Descubre qué se publica, de dónde viene y qué zonas requieren atención.</p>
         </div>
