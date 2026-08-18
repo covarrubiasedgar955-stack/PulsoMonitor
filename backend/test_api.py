@@ -524,6 +524,63 @@ class PulsoMonitorApiTests(unittest.TestCase):
             image_url = main.fetch_open_graph_image("https://news.google.com/rss/articles/identificador")
         self.assertEqual(image_url, "https://periodico.example/media/foto-real.jpg")
 
+    def test_article_image_candidates_include_json_ld_and_lazy_images(self):
+        document = b"""
+        <html><head>
+          <meta property="og:image" content="/assets/logo-del-medio.png">
+          <script type="application/ld+json">
+            {"@type":"NewsArticle","image":{"url":"/fotos/reporte-local.jpg"}}
+          </script>
+        </head><body>
+          <article><img data-src="/fotos/segunda-foto.webp"></article>
+        </body></html>
+        """
+        with patch.object(
+            main, "resolve_google_news_url", return_value="https://periodico.example/noticia"
+        ), patch.object(
+            main,
+            "fetch_public_document",
+            return_value=(document, "https://periodico.example/noticia"),
+        ), patch.object(main, "public_feed_url", return_value=None):
+            candidates = main.fetch_article_image_candidates("https://news.google.com/rss/articles/nuevo")
+        self.assertEqual(
+            candidates,
+            [
+                "https://periodico.example/assets/logo-del-medio.png",
+                "https://periodico.example/fotos/reporte-local.jpg",
+                "https://periodico.example/fotos/segunda-foto.webp",
+            ],
+        )
+
+    def test_backfill_tries_later_article_image_when_first_is_generic(self):
+        news_id = None
+        payload = {
+            "title": "Imagen alternativa 112", "summary": "Contenido", "content": "Texto",
+            "source": "Radar", "author": "Pulso", "municipality": "Tequila", "category": "General",
+            "priority": "Media", "status": "Pendiente", "image_url": "",
+            "url": "https://news.google.com/rss/articles/imagen-alternativa",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+            "is_ai": False, "tags": ["imagen-112"],
+        }
+        try:
+            news_id = self.client.post("/api/noticias", headers=self.headers, json=payload).json()["id"]
+            candidates = [
+                "https://periodico.example/assets/logo.png",
+                "https://periodico.example/fotos/reporte-real.jpg",
+            ]
+            with patch.object(main, "fetch_article_image_candidates", return_value=candidates), patch.object(
+                main, "looks_generic_news_image", side_effect=lambda value: "logo" in value
+            ), patch.object(main, "news_image_looks_like_logo", return_value=False):
+                _, recovered, _ = main.backfill_news_images(limit=200)
+            self.assertEqual(recovered, 1)
+            with main.connection() as db:
+                row = db.execute("SELECT image_url FROM noticias WHERE id = ?", (news_id,)).fetchone()
+            self.assertEqual(row["image_url"], candidates[1])
+        finally:
+            if news_id is not None:
+                with main.connection() as db:
+                    db.execute("DELETE FROM noticias WHERE id = ?", (news_id,))
+
     def test_google_news_old_identifier_decodes_publisher_url(self):
         encoded = base64.urlsafe_b64encode(
             b'\x08\x13"https://periodico.example/noticias/reporte-local\xd2\x01\x00'
