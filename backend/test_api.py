@@ -543,6 +543,20 @@ class PulsoMonitorApiTests(unittest.TestCase):
                 "https://periodico.example/noticias/operativo?x=1&y=2",
             )
 
+    def test_google_news_current_batch_protocol_resolves_without_signature(self):
+        response_payload = r'[["wrb.fr","Fbv4je","[\"garturlres\",\"https://periodico.example/noticia-local\"]"]]'
+        with patch.object(main, "public_feed_url", return_value=None), patch.object(
+            main.httpx, "post"
+        ) as post_mock:
+            post_mock.return_value.text = response_payload
+            post_mock.return_value.raise_for_status.return_value = None
+            decoded = main.decode_google_news_batch("AU_yqL_identificador")
+        self.assertEqual(decoded, "https://periodico.example/noticia-local")
+        self.assertIn("rpcids=Fbv4je", post_mock.call_args.args[0])
+        request_body = post_mock.call_args.kwargs["data"]["f.req"]
+        self.assertIn("AU_yqL_identificador", request_body)
+        self.assertNotIn("data-n-a-sg", request_body)
+
     def test_open_graph_image_fetches_resolved_google_news_article(self):
         document = b'<meta property="og:image" content="https://cdn.periodico.example/foto.jpg">'
         with patch.object(

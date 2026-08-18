@@ -1706,12 +1706,45 @@ def find_external_url_in_google_payload(payload: str) -> str:
     return ""
 
 
+def decode_google_news_batch(article_id: str) -> str:
+    request_payload = [
+        "garturlreq",
+        [["es-419", "MX", ["FINANCE_TOP_INDICES", "WEB_TEST_1_0_0"], None, None, 1, 1,
+          "MX:es-419", None, 180, None, None, None, None, None, 0, None, None,
+          [1608992183, 723341000]], "es-419", "MX", 1, [2, 3, 4, 8], 1, 0,
+         "655000234", 0, 0, None, 0],
+        article_id,
+    ]
+    rpc = [["Fbv4je", json.dumps(request_payload, separators=(",", ":")), None, "generic"]]
+    try:
+        endpoint = "https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je"
+        public_feed_url(endpoint)
+        response = httpx.post(
+            endpoint,
+            data={"f.req": json.dumps([rpc], separators=(",", ":"))},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0",
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "Referer": "https://news.google.com/",
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        return find_external_url_in_google_payload(response.text)
+    except (ValueError, httpx.HTTPError, ImportError):
+        return ""
+
+
 def resolve_google_news_url(url: str) -> str:
     article_id = google_news_article_id(url)
     if not article_id:
         return url
 
     decoded = decode_google_news_id(article_id)
+    if decoded:
+        return decoded
+
+    decoded = decode_google_news_batch(article_id)
     if decoded:
         return decoded
 
@@ -1742,7 +1775,7 @@ def resolve_google_news_url(url: str) -> str:
     ]
     rpc = [["Fbv4je", json.dumps(request_payload, separators=(",", ":")), None, "generic"]]
     try:
-        endpoint = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
+        endpoint = "https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je"
         public_feed_url(endpoint)
         response = httpx.post(
             endpoint,
@@ -1750,12 +1783,13 @@ def resolve_google_news_url(url: str) -> str:
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0",
                 "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "Referer": "https://news.google.com/",
             },
             timeout=15,
         )
         response.raise_for_status()
         return find_external_url_in_google_payload(response.text) or url
-    except (ValueError, httpx.HTTPError):
+    except (ValueError, httpx.HTTPError, ImportError):
         return url
 
 
