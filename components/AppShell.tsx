@@ -1,5 +1,6 @@
 "use client";
 
+import { APP_VERSION } from "@/lib/version";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { FormEvent, ReactNode, useEffect, useState } from "react";
@@ -130,7 +131,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </nav>
         <div className="sidebar-footer">
           <span className="status-dot" /> API local
-          <small>Versión 1.11.2</small>
+          <small>Versión {APP_VERSION}</small>
         </div>
       </aside>
       {menuOpen && <button className="backdrop" aria-label="Cerrar menú" onClick={() => setMenuOpen(false)} />}
