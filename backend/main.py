@@ -2552,12 +2552,30 @@ def backfill_news_images(limit: int = 8, max_seconds: float = 75) -> tuple[int, 
         return bool(news_image_identity(image_url) in repeated)
 
     rows: list[sqlite3.Row] = []
+    selected_ids: set[int] = set()
+
+    # Missing and URL-repeated images are cheap to identify and get priority.
+    for row in all_rows:
+        if len(rows) >= batch_limit:
+            break
+        current_image = row["current_image"]
+        if not current_image or is_repeated_image(current_image):
+            rows.append(row)
+            selected_ids.add(int(row["id"]))
+
+    # Visual inspection downloads the image, so only sample a small number per run.
+    visual_samples = 0
     for row in all_rows:
         if len(rows) >= batch_limit or time.monotonic() >= deadline:
             break
-        current_image = row["current_image"]
-        if not current_image or is_repeated_image(current_image) or is_generic_image(current_image):
+        if int(row["id"]) in selected_ids or not row["current_image"]:
+            continue
+        visual_samples += 1
+        if is_generic_image(row["current_image"]):
             rows.append(row)
+            selected_ids.add(int(row["id"]))
+        if visual_samples >= batch_limit:
+            break
 
     checked = 0
     recovered = 0
