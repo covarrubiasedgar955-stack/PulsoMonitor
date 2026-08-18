@@ -1627,7 +1627,9 @@ def public_feed_url(value: str) -> None:
             raise ValueError("Por seguridad, el Radar solo consulta fuentes públicas.")
 
 
-def fetch_public_document(url: str) -> tuple[bytes, str]:
+def fetch_public_document(
+    url: str, timeout: float = 15, max_redirects: int = 8
+) -> tuple[bytes, str]:
     current_url = url
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -1635,8 +1637,8 @@ def fetch_public_document(url: str) -> tuple[bytes, str]:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "es-MX,es;q=0.9,en;q=0.6",
     }
-    with httpx.Client(timeout=15, follow_redirects=False, headers=headers) as client:
-        for _ in range(8):
+    with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers) as client:
+        for _ in range(max_redirects):
             public_feed_url(current_url)
             response = client.get(current_url)
             if response.status_code in {301, 302, 303, 307, 308}:
@@ -1652,8 +1654,8 @@ def fetch_public_document(url: str) -> tuple[bytes, str]:
     raise ValueError("La fuente realizó demasiadas redirecciones.")
 
 
-def fetch_feed_bytes(url: str) -> bytes:
-    content, _ = fetch_public_document(url)
+def fetch_feed_bytes(url: str, timeout: float = 15) -> bytes:
+    content, _ = fetch_public_document(url, timeout=timeout, max_redirects=4)
     return content
 
 
@@ -1887,7 +1889,7 @@ def structured_image_values(value: object) -> list[str]:
 def fetch_article_image_candidates(url: str) -> list[str]:
     try:
         article_url = resolve_google_news_url(url)
-        document, final_url = fetch_public_document(article_url)
+        document, final_url = fetch_public_document(article_url, timeout=4, max_redirects=3)
         html_text = document.decode("utf-8", errors="ignore")
     except (ValueError, httpx.HTTPError, UnicodeError):
         return []
@@ -2444,7 +2446,7 @@ def news_image_fingerprint(image_url: str) -> str:
     if not image_url:
         return ""
     try:
-        image_bytes = fetch_feed_bytes(image_url)
+        image_bytes = fetch_feed_bytes(image_url, timeout=5)
         with Image.open(io.BytesIO(image_bytes)) as image:
             gray = image.convert("L").resize((16, 16))
             pixels = list(gray.getdata())
@@ -2460,7 +2462,7 @@ def news_image_looks_like_logo(image_url: str) -> bool:
     if not image_url:
         return True
     try:
-        image_bytes = fetch_feed_bytes(image_url)
+        image_bytes = fetch_feed_bytes(image_url, timeout=5)
         with Image.open(io.BytesIO(image_bytes)) as image:
             width, height = image.size
             if width < 180 or height < 180:
@@ -2505,8 +2507,12 @@ def news_image_looks_like_logo(image_url: str) -> bool:
         return True
 
 
-def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
-    """Replace generic covers when possible and otherwise show an honest empty state."""
+def backfill_news_images(limit: int = 8, max_seconds: float = 75) -> tuple[int, int, int]:
+    """Recover real article photos in short batches without blocking the application."""
+    started = time.monotonic()
+    deadline = started + max(15, min(float(max_seconds), 120))
+    batch_limit = max(1, min(int(limit), 12))
+
     with connection() as db:
         all_rows = db.execute(
             """
@@ -2525,27 +2531,13 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
             ORDER BY datetime(COALESCE(n.published_at, n.created_at)) DESC
             """
         ).fetchall()
+
     identity_counts: dict[str, int] = {}
     for row in all_rows:
         identity = news_image_identity(row["current_image"])
         if identity:
             identity_counts[identity] = identity_counts.get(identity, 0) + 1
     repeated = {identity for identity, count in identity_counts.items() if count >= 2}
-    fingerprint_cache: dict[str, str] = {}
-    fingerprint_counts: dict[str, int] = {}
-    for row in all_rows:
-        image_url = row["current_image"]
-        if not image_url:
-            continue
-        identity = news_image_identity(image_url)
-        fingerprint = fingerprint_cache.get(identity)
-        if fingerprint is None:
-            fingerprint = news_image_fingerprint(image_url)
-            fingerprint_cache[identity] = fingerprint
-        if fingerprint:
-            fingerprint_counts[fingerprint] = fingerprint_counts.get(fingerprint, 0) + 1
-    repeated_fingerprints = {value for value, count in fingerprint_counts.items() if count >= 2}
-
     visual_generic_cache: dict[str, bool] = {}
 
     def is_generic_image(image_url: str) -> bool:
@@ -2557,34 +2549,54 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
         return visual_generic_cache[identity]
 
     def is_repeated_image(image_url: str) -> bool:
-        identity = news_image_identity(image_url)
-        return identity in repeated or bool(fingerprint_cache.get(identity) in repeated_fingerprints)
+        return bool(news_image_identity(image_url) in repeated)
 
-    rows = [
-        row for row in all_rows
-        if not row["current_image"]
-        or is_repeated_image(row["current_image"])
-        or is_generic_image(row["current_image"])
-    ][:max(1, min(limit, 200))]
+    rows: list[sqlite3.Row] = []
+    for row in all_rows:
+        if len(rows) >= batch_limit or time.monotonic() >= deadline:
+            break
+        current_image = row["current_image"]
+        if not current_image or is_repeated_image(current_image) or is_generic_image(current_image):
+            rows.append(row)
 
+    checked = 0
     recovered = 0
     discarded = 0
     for row in rows:
+        if time.monotonic() >= deadline:
+            break
+        checked += 1
         current_image = row["current_image"]
         current_is_generic = bool(current_image) and (
             is_repeated_image(current_image) or is_generic_image(current_image)
         )
         image_url = ""
+
         for candidate in (row["facebook_image"], row["radar_image"]):
+            if time.monotonic() >= deadline:
+                break
             accepted = valid_public_image_url(candidate)
-            if accepted and accepted != current_image and not is_repeated_image(accepted) and not is_generic_image(accepted):
+            if (
+                accepted
+                and accepted != current_image
+                and not is_repeated_image(accepted)
+                and not is_generic_image(accepted)
+            ):
                 image_url = accepted
                 break
-        if not image_url and row["url"]:
-            for accepted in fetch_article_image_candidates(row["url"]):
-                if accepted != current_image and not is_repeated_image(accepted) and not is_generic_image(accepted):
+
+        if not image_url and row["url"] and time.monotonic() < deadline:
+            for accepted in fetch_article_image_candidates(row["url"])[:4]:
+                if time.monotonic() >= deadline:
+                    break
+                if (
+                    accepted != current_image
+                    and not is_repeated_image(accepted)
+                    and not is_generic_image(accepted)
+                ):
                     image_url = accepted
                     break
+
         with connection() as db:
             if image_url:
                 cursor = db.execute(
@@ -2598,8 +2610,8 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
                     (utc_now(), row["id"]),
                 )
                 discarded += int(cursor.rowcount)
-    return len(rows), recovered, discarded
 
+    return checked, recovered, discarded
 
 def run_automation_job(key: AutomationKey, scheduled: bool = False) -> AutomationJob:
     with AUTOMATION_LOCK:
