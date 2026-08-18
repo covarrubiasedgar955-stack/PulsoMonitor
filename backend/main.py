@@ -132,6 +132,7 @@ def init_database() -> None:
                 priority TEXT NOT NULL DEFAULT 'Media',
                 status TEXT NOT NULL DEFAULT 'Pendiente',
                 image_url TEXT NOT NULL DEFAULT '',
+                image_checked_at TEXT,
                 url TEXT NOT NULL DEFAULT '',
                 published_at TEXT,
                 created_at TEXT NOT NULL,
@@ -157,6 +158,8 @@ def init_database() -> None:
             """
         )
         news_columns = {row["name"] for row in db.execute("PRAGMA table_info(noticias)").fetchall()}
+        if "image_checked_at" not in news_columns:
+            db.execute("ALTER TABLE noticias ADD COLUMN image_checked_at TEXT")
         if "facebook_post_id" not in news_columns:
             db.execute("ALTER TABLE noticias ADD COLUMN facebook_post_id TEXT NOT NULL DEFAULT ''")
         if "scheduled_at" not in news_columns:
@@ -2516,7 +2519,8 @@ def backfill_news_images(limit: int = 8, max_seconds: float = 75) -> tuple[int, 
     with connection() as db:
         all_rows = db.execute(
             """
-            SELECT n.id, COALESCE(n.image_url, '') AS current_image, COALESCE(n.url, '') AS url,
+            SELECT n.id, COALESCE(n.image_url, '') AS current_image,
+                COALESCE(n.image_checked_at, '') AS image_checked_at, COALESCE(n.url, '') AS url,
                 COALESCE((
                     SELECT fp.picture_url FROM facebook_posts fp
                     WHERE fp.imported_news_id = n.id AND TRIM(COALESCE(fp.picture_url, '')) != ''
@@ -2528,7 +2532,10 @@ def backfill_news_images(limit: int = 8, max_seconds: float = 75) -> tuple[int, 
                     ORDER BY ri.id DESC LIMIT 1
                 ), '') AS radar_image
             FROM noticias n
-            ORDER BY datetime(COALESCE(n.published_at, n.created_at)) DESC
+            ORDER BY
+                CASE WHEN TRIM(COALESCE(n.image_checked_at, '')) = '' THEN 0 ELSE 1 END,
+                datetime(n.image_checked_at) ASC,
+                datetime(COALESCE(n.published_at, n.created_at)) DESC
             """
         ).fetchall()
 
@@ -2618,16 +2625,21 @@ def backfill_news_images(limit: int = 8, max_seconds: float = 75) -> tuple[int, 
         with connection() as db:
             if image_url:
                 cursor = db.execute(
-                    "UPDATE noticias SET image_url = ?, updated_at = ? WHERE id = ?",
-                    (image_url, utc_now(), row["id"]),
+                    "UPDATE noticias SET image_url = ?, image_checked_at = ?, updated_at = ? WHERE id = ?",
+                    (image_url, utc_now(), utc_now(), row["id"]),
                 )
                 recovered += int(cursor.rowcount)
             elif current_is_generic:
                 cursor = db.execute(
-                    "UPDATE noticias SET image_url = '', updated_at = ? WHERE id = ?",
-                    (utc_now(), row["id"]),
+                    "UPDATE noticias SET image_url = '', image_checked_at = ?, updated_at = ? WHERE id = ?",
+                    (utc_now(), utc_now(), row["id"]),
                 )
                 discarded += int(cursor.rowcount)
+            else:
+                db.execute(
+                    "UPDATE noticias SET image_checked_at = ? WHERE id = ?",
+                    (utc_now(), row["id"]),
+                )
 
     return checked, recovered, discarded
 
