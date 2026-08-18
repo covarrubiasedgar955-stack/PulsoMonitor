@@ -105,7 +105,7 @@ export default function AnalyticsPage() {
     <main>
       <div className="page-heading analytics-heading">
         <div>
-          <p className="eyebrow">VERSIÓN 1.2 · INTELIGENCIA EDITORIAL</p>
+          <p className="eyebrow">VERSIÓN 1.11.2 · INTELIGENCIA EDITORIAL</p>
           <h1>Estadísticas</h1>
           <p>Descubre qué se publica, de dónde viene y qué zonas requieren atención.</p>
         </div>
