@@ -174,7 +174,7 @@ export default function CalendarPage() {
   return (
     <main>
       <div className="page-heading calendar-heading">
-        <div><p className="eyebrow">VERSIÓN 1.3 · PLANEACIÓN</p><h1>Calendario editorial</h1><p>Organiza la cobertura, programación y publicaciones de Pulso Tequila.</p></div>
+        <div><p className="eyebrow">VERSIÓN 1.11.2 · PLANEACIÓN</p><h1>Calendario editorial</h1><p>Organiza la cobertura, programación y publicaciones de Pulso Tequila.</p></div>
         <div className="heading-actions"><button className="button secondary" onClick={goToday}>Hoy</button><Link href="/publicaciones" className="button primary">Programar en Facebook</Link></div>
       </div>
 

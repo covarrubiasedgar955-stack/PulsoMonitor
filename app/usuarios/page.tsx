@@ -143,7 +143,7 @@ export default function UsersPage() {
   return (
     <main>
       <div className="page-heading">
-        <div><p className="eyebrow">VERSIÓN 1.0 · EQUIPO</p><h1>Usuarios</h1><p>Controla quién entra a Pulso Monitor y qué acciones puede realizar.</p></div>
+        <div><p className="eyebrow">VERSIÓN 1.11.2 · EQUIPO</p><h1>Usuarios</h1><p>Controla quién entra a Pulso Monitor y qué acciones puede realizar.</p></div>
         <button className="button primary" onClick={() => open()}>+ Nuevo usuario</button>
       </div>
 

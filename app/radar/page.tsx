@@ -152,7 +152,7 @@ export default function RadarPage() {
   return (
     <main>
       <div className="page-heading radar-heading">
-        <div><p className="eyebrow">VERSIÓN 1.5 · COBERTURA LOCAL</p><h1>Radar</h1><p>Busca automáticamente noticias de Tequila y municipios cercanos.</p></div>
+        <div><p className="eyebrow">VERSIÓN 1.11.2 · COBERTURA LOCAL</p><h1>Radar</h1><p>Busca automáticamente noticias de Tequila y municipios cercanos.</p></div>
         <div className="heading-actions"><button className="button secondary" onClick={addSource}>+ Agregar fuente</button><button className="button primary" onClick={() => scan()} disabled={scanning !== null || sources.length === 0}>{scanning === "all" ? "Escaneando…" : "⌖ Escanear todas"}</button></div>
       </div>
 

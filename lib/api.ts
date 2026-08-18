@@ -56,6 +56,27 @@ function token() {
   return typeof window === "undefined" ? null : localStorage.getItem("pulso_token");
 }
 
+function repairMojibake(value: string): string {
+  if (!/[ÃÂ]/.test(value)) return value;
+  try {
+    const bytes = Uint8Array.from(value, (character) => character.charCodeAt(0));
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return value;
+  }
+}
+
+function normalizeApiData(value: unknown): unknown {
+  if (typeof value === "string") return repairMojibake(value);
+  if (Array.isArray(value)) return value.map(normalizeApiData);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, normalizeApiData(item)]),
+    );
+  }
+  return value;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const authToken = token();
   let response: Response;
@@ -75,7 +96,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     let message = "No se pudo completar la operación.";
     try {
-      const body = await response.json();
+      const body = normalizeApiData(await response.json()) as { detail?: string; message?: string };
       message = body.detail || body.message || message;
     } catch {
       // The API did not return JSON.
@@ -88,7 +109,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  return normalizeApiData(await response.json()) as T;
 }
 
 export const api = {
