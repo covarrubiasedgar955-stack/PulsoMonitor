@@ -1,5 +1,6 @@
 "use client";
 
+import { APP_VERSION } from "@/lib/version";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import type { AutomationJob, AutomationKey, SystemNotification } from "@/types/news";
@@ -115,7 +116,7 @@ export default function AutomationsPage() {
   return (
     <main>
       <div className="page-heading">
-        <div><p className="eyebrow">VERSIÓN 1.11.2 · OPERACIÓN AUTOMÁTICA</p><h1>Automatizaciones</h1><p>Programa tareas de monitoreo y revisa sus resultados desde un solo lugar.</p></div>
+        <div><p className="eyebrow">VERSIÓN {APP_VERSION} · OPERACIÓN AUTOMÁTICA</p><h1>Automatizaciones</h1><p>Programa tareas de monitoreo y revisa sus resultados desde un solo lugar.</p></div>
         <button className="button secondary" onClick={load}>↻ Actualizar estado</button>
       </div>
 

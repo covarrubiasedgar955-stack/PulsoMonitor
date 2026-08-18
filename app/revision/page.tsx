@@ -1,5 +1,6 @@
 "use client";
 
+import { APP_VERSION } from "@/lib/version";
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
@@ -147,7 +148,7 @@ export default function EditorialReviewPage() {
   return (
     <main>
       <div className="page-heading">
-        <div><p className="eyebrow">VERSIÓN 1.11.2 · CONTROL EDITORIAL</p><h1>Revisión editorial</h1><p>Asigna responsables, solicita correcciones y aprueba cada noticia antes de publicarla.</p></div>
+        <div><p className="eyebrow">VERSIÓN {APP_VERSION} · CONTROL EDITORIAL</p><h1>Revisión editorial</h1><p>Asigna responsables, solicita correcciones y aprueba cada noticia antes de publicarla.</p></div>
         <Link href="/noticias" className="button primary">+ Crear noticia</Link>
       </div>
       {error && <div className="alert error">{error}</div>}

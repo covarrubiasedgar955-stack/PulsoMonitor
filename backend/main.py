@@ -1841,21 +1841,108 @@ def feed_image_url(entry: dict, link: str) -> str:
     return ""
 
 
-def fetch_open_graph_image(url: str) -> str:
+def html_tag_attributes(tag: str) -> dict[str, str]:
+    return {
+        name.lower(): unescape(value.strip())
+        for name, _, value in re.findall(
+            r"""([:\w-]+)\s*=\s*(['"])(.*?)\2""",
+            tag,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    }
+
+
+def structured_image_values(value: object) -> list[str]:
+    images: list[str] = []
+
+    def add_image(item: object) -> None:
+        if isinstance(item, str):
+            images.append(item)
+        elif isinstance(item, list):
+            for child in item:
+                add_image(child)
+        elif isinstance(item, dict):
+            direct = item.get("url") or item.get("contentUrl") or item.get("thumbnailUrl")
+            if isinstance(direct, str):
+                images.append(direct)
+            for child in item.values():
+                if isinstance(child, (dict, list)):
+                    add_image(child)
+
+    def walk(item: object) -> None:
+        if isinstance(item, list):
+            for child in item:
+                walk(child)
+        elif isinstance(item, dict):
+            for key, child in item.items():
+                if str(key).lower() in {"image", "thumbnailurl", "contenturl"}:
+                    add_image(child)
+                elif isinstance(child, (dict, list)):
+                    walk(child)
+
+    walk(value)
+    return images
+
+
+def fetch_article_image_candidates(url: str) -> list[str]:
     try:
         article_url = resolve_google_news_url(url)
         document, final_url = fetch_public_document(article_url)
         html_text = document.decode("utf-8", errors="ignore")
     except (ValueError, httpx.HTTPError, UnicodeError):
-        return ""
+        return []
+
+    candidates: list[str] = []
+
     for tag in re.findall(r"<meta\b[^>]*>", html_text, flags=re.IGNORECASE):
-        name = re.search(r"\b(?:property|name)\s*=\s*['\"]([^'\"]+)", tag, flags=re.IGNORECASE)
-        content = re.search(r"\bcontent\s*=\s*['\"]([^'\"]+)", tag, flags=re.IGNORECASE)
-        if name and content and name.group(1).lower() in {"og:image", "og:image:url", "twitter:image"}:
-            accepted = valid_public_image_url(content.group(1), final_url)
-            if accepted:
-                return accepted
-    return ""
+        attributes = html_tag_attributes(tag)
+        name = (attributes.get("property") or attributes.get("name") or attributes.get("itemprop") or "").lower()
+        if name in {"og:image", "og:image:url", "twitter:image", "twitter:image:src", "image", "thumbnailurl"}:
+            candidates.append(attributes.get("content", ""))
+
+    for tag in re.findall(r"<link\b[^>]*>", html_text, flags=re.IGNORECASE):
+        attributes = html_tag_attributes(tag)
+        relations = {item.lower() for item in attributes.get("rel", "").split()}
+        if "image_src" in relations or "preload" in relations and attributes.get("as", "").lower() == "image":
+            candidates.append(attributes.get("href", ""))
+
+    for payload in re.findall(
+        r"<script\b[^>]*type\s*=\s*['\"]application/ld\+json['\"][^>]*>(.*?)</script>",
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        try:
+            candidates.extend(structured_image_values(json.loads(unescape(payload).strip())))
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    for tag in re.findall(r"<img\b[^>]*>", html_text, flags=re.IGNORECASE):
+        attributes = html_tag_attributes(tag)
+        for key in ("src", "data-src", "data-lazy-src", "data-original"):
+            if attributes.get(key):
+                candidates.append(attributes[key])
+        srcset = attributes.get("srcset") or attributes.get("data-srcset") or ""
+        if srcset:
+            parts = [part.strip().split()[0] for part in srcset.split(",") if part.strip()]
+            candidates.extend(reversed(parts))
+
+    accepted: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        image_url = valid_public_image_url(candidate, final_url)
+        identity = news_image_identity(image_url) or image_url
+        if not image_url or identity in seen:
+            continue
+        seen.add(identity)
+        accepted.append(image_url)
+        if len(accepted) >= 16:
+            break
+    return accepted
+
+
+def fetch_open_graph_image(url: str) -> str:
+    candidates = fetch_article_image_candidates(url)
+    return candidates[0] if candidates else ""
 
 
 LOCAL_COVERAGE = (
@@ -2092,7 +2179,10 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
             image_url = usable_image(feed_image_url(entry, link))
             if not image_url and link and open_graph_budget > 0:
                 open_graph_budget -= 1
-                image_url = usable_image(fetch_open_graph_image(link))
+                for candidate in fetch_article_image_candidates(link):
+                    image_url = usable_image(candidate)
+                    if image_url:
+                        break
             cursor = db.execute(
                 """
                 INSERT OR IGNORE INTO radar_items (
@@ -2491,9 +2581,10 @@ def backfill_news_images(limit: int = 200) -> tuple[int, int, int]:
                 image_url = accepted
                 break
         if not image_url and row["url"]:
-            accepted = fetch_open_graph_image(row["url"])
-            if accepted and accepted != current_image and not is_repeated_image(accepted) and not is_generic_image(accepted):
-                image_url = accepted
+            for accepted in fetch_article_image_candidates(row["url"]):
+                if accepted != current_image and not is_repeated_image(accepted) and not is_generic_image(accepted):
+                    image_url = accepted
+                    break
         with connection() as db:
             if image_url:
                 cursor = db.execute(
