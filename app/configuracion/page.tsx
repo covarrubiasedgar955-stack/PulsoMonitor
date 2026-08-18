@@ -89,7 +89,7 @@ export default function SettingsPage() {
   return (
     <main>
       <div className="page-heading">
-        <div><p className="eyebrow">VERSIÓN 1.0 · ADMINISTRACIÓN</p><h1>Configuración</h1><p>Personaliza el medio, revisa la actividad y protege la base de datos.</p></div>
+        <div><p className="eyebrow">VERSIÓN 1.11.2 · ADMINISTRACIÓN</p><h1>Configuración</h1><p>Personaliza el medio, revisa la actividad y protege la base de datos.</p></div>
         <button className="button primary" onClick={createBackup} disabled={backingUp}>{backingUp ? "Creando…" : "＋ Crear respaldo"}</button>
       </div>
 
