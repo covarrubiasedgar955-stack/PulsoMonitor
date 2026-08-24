@@ -1010,6 +1010,10 @@ class FacebookStatus(BaseModel):
     graph_version: str
     last_sync: str | None
     last_error: str
+    health: Literal["disconnected", "ok", "network", "token_expired", "permissions", "page_error", "unknown"]
+    health_message: str
+    needs_reconnect: bool
+    checked_at: str | None
     posts: int
     pending: int
     imported: int
@@ -2220,26 +2224,63 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
     return detected, imported
 
 
+class FacebookGraphError(ValueError):
+    def __init__(self, kind: str, message: str, code: str = ""):
+        super().__init__(message)
+        self.kind = kind
+        self.code = code
+
+
+def classify_facebook_error(message: str) -> tuple[str, str, bool]:
+    normalized = message.casefold()
+    if "venció" in normalized or "invalidado" in normalized or "expired" in normalized or "oauth" in normalized:
+        return "token_expired", "El acceso de Facebook venció. Reconecta la página con un Page Access Token nuevo.", True
+    if "permiso" in normalized or "permission" in normalized or "pages_manage" in normalized or "pages_read" in normalized:
+        return "permissions", "El token no tiene los permisos necesarios de la página. Genera uno nuevo y reconecta.", True
+    if "no existe" in normalized or "nonexisting" in normalized or "unsupported get request" in normalized:
+        return "page_error", "Meta no reconoce la página configurada. Verifica el ID y reconecta.", True
+    if "conexión" in normalized or "internet" in normalized or "demasiado" in normalized or "timeout" in normalized:
+        return "network", "No fue posible comunicarse con Meta. Revisa Internet y vuelve a comprobar.", False
+    return "unknown", message or "Meta devolvió un error no identificado.", False
+
+
 def facebook_graph_get(path: str, token: str, params: dict[str, str] | None = None) -> dict:
     query = {**(params or {}), "access_token": token}
     url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
-    try:
-        response = httpx.get(url, params=query, timeout=20, headers={"User-Agent": "PulsoMonitor/1.1"})
-        data = response.json()
-    except httpx.TimeoutException as error:
-        raise ValueError("Meta tardó demasiado en responder; intenta nuevamente.") from error
-    except httpx.HTTPError as error:
-        raise ValueError("No hay conexión con Meta; revisa Internet y vuelve a intentar.") from error
-    except ValueError as error:
-        raise ValueError("Meta devolvió una respuesta no válida.") from error
+    response = None
+    data: dict = {}
+    for attempt in range(2):
+        try:
+            response = httpx.get(url, params=query, timeout=8, headers={"User-Agent": "PulsoMonitor/1.13"})
+            data = response.json()
+            break
+        except httpx.TimeoutException as error:
+            if attempt == 0:
+                time.sleep(0.4)
+                continue
+            raise FacebookGraphError("network", "Meta tardó demasiado en responder; revisa Internet e intenta nuevamente.") from error
+        except httpx.HTTPError as error:
+            if attempt == 0:
+                time.sleep(0.4)
+                continue
+            raise FacebookGraphError("network", "No hay conexión con Meta; revisa Internet y vuelve a intentar.") from error
+        except ValueError as error:
+            raise FacebookGraphError("unknown", "Meta devolvió una respuesta no válida.") from error
+    if response is None:
+        raise FacebookGraphError("network", "No fue posible comunicarse con Meta.")
     if not response.is_success or data.get("error"):
         api_error = data.get("error") or {}
+        code = str(api_error.get("code") or "")
         message = clean_feed_text(str(api_error.get("message") or "Meta rechazó la solicitud."), 350)
-        if str(api_error.get("code") or "") == "190":
-            message = "El token de Facebook venció o fue invalidado. Vuelve a conectar la página."
-        raise ValueError(message)
+        if code == "190":
+            raise FacebookGraphError("token_expired", "El token de Facebook venció o fue invalidado. Reconecta la página.", code)
+        if code in {"10", "200"}:
+            raise FacebookGraphError("permissions", "El token no incluye los permisos necesarios para administrar esta página.", code)
+        if code == "100":
+            raise FacebookGraphError("page_error", f"Meta no encontró la página o el recurso solicitado: {message}", code)
+        kind, friendly, _ = classify_facebook_error(message)
+        raise FacebookGraphError(kind, friendly, code)
     return data
-
 
 def facebook_graph_post(path: str, token: str, params: dict[str, str]) -> dict:
     url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
@@ -2312,18 +2353,28 @@ def facebook_status_data() -> FacebookStatus:
             FROM facebook_posts
             """
         ).fetchone()
+    last_error = str(state_row["last_error"] or "")
+    if not connected:
+        health, health_message, needs_reconnect = "disconnected", "Facebook no está conectado.", False
+    elif last_error:
+        health, health_message, needs_reconnect = classify_facebook_error(last_error)
+    else:
+        health, health_message, needs_reconnect = "ok", "La conexión está lista para sincronizar.", False
     return FacebookStatus(
         connected=connected,
         page_id=os.getenv("FACEBOOK_PAGE_ID", "") if connected else "",
         page_name=(state_row["page_name"] or os.getenv("FACEBOOK_PAGE_NAME", "")) if connected else "",
         graph_version=META_GRAPH_VERSION,
         last_sync=state_row["last_sync"],
-        last_error=state_row["last_error"],
+        last_error=last_error,
+        health=health,
+        health_message=health_message,
+        needs_reconnect=needs_reconnect,
+        checked_at=state_row["updated_at"],
         posts=int(count_row["posts"] or 0),
         pending=int(count_row["pending"] or 0),
         imported=int(count_row["imported"] or 0),
     )
-
 
 def geolocate_automation_batch(limit: int = 20) -> str:
     with connection() as db:
@@ -3434,6 +3485,36 @@ def import_radar_item(item_id: int, _: Annotated[str, Depends(current_user)]) ->
 
 @app.get("/api/facebook/estado", response_model=FacebookStatus)
 def facebook_status(_: Annotated[str, Depends(current_user)]) -> FacebookStatus:
+    return facebook_status_data()
+
+
+@app.post("/api/facebook/diagnostico", response_model=FacebookStatus)
+def diagnose_facebook(user: Annotated[AuthenticatedUser, Depends(current_user)]) -> FacebookStatus:
+    require_role(user, "Administrador")
+    page_id = os.getenv("FACEBOOK_PAGE_ID", "").strip()
+    token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "").strip()
+    if not page_id or not token:
+        raise HTTPException(status_code=400, detail="Facebook no está conectado.")
+    now = utc_now()
+    try:
+        page = facebook_graph_get(page_id, token, {"fields": "id,name"})
+        if str(page.get("id") or "") != page_id:
+            raise FacebookGraphError("page_error", "Meta devolvió una página distinta a la configurada.")
+        page_name = clean_feed_text(str(page.get("name") or ""), 160)
+        with connection() as db:
+            db.execute(
+                "UPDATE facebook_state SET page_name = ?, last_error = '', updated_at = ? WHERE id = 1",
+                (page_name or os.getenv("FACEBOOK_PAGE_NAME", ""), now),
+            )
+        audit(user, "Comprobó conexión de Facebook", "facebook", page_id, "Conexión correcta")
+    except FacebookGraphError as error:
+        message = clean_feed_text(str(error), 350)
+        with connection() as db:
+            db.execute(
+                "UPDATE facebook_state SET last_error = ?, updated_at = ? WHERE id = 1",
+                (message, now),
+            )
+        audit(user, "Comprobó conexión de Facebook", "facebook", page_id, message)
     return facebook_status_data()
 
 
