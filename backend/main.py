@@ -2915,7 +2915,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.5.0",
+    version="1.14.0",
     description="API local para administrar noticias, revisión editorial, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
@@ -2934,7 +2934,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.5.0"}
+    return {"status": "ok", "version": "1.14.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
