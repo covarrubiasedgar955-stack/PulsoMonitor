@@ -1,4 +1,4 @@
-# Pulso Monitor v1.5
+# Pulso Monitor v1.16
 
 Centro local de administración, redacción y detección de noticias para **Pulso Tequila**. Incluye dashboard, gestión editorial, Asistente IA, Radar de fuentes y conexión autorizada con Facebook.
 
@@ -64,6 +64,9 @@ Centro local de administración, redacción y detección de noticias para **Puls
 - Cobertura automática de Tequila, Amatitán, Magdalena, El Arenal, Tala, Hostotipaquillo y San Marcos.
 - Búsqueda periódica en canales públicos de noticias, con eliminación de duplicados.
 - Importación automática de resultados recientes como borradores sujetos a revisión editorial.
+- Carga directa de fotografías JPEG, PNG o WebP desde la computadora.
+- Normalización de fotos a JPEG, vista previa y rechazo de logotipos, íconos y banners.
+- Envío directo del archivo local a Facebook sin requerir una dirección pública de Internet.
 
 ## Instalación rápida en Windows
 
@@ -108,7 +111,7 @@ Las noticias que aún no se han enviado a Facebook pueden recibir una **fecha ed
 
 ## Revisión editorial
 
-El módulo **Revisión editorial** organiza las noticias en Borrador, En revisión, Aprobada y Cambios solicitados. Un responsable puede preparar el contenido y enviarlo a revisión; un Administrador o Editor puede aprobarlo o devolverlo con observaciones claras.
+El módulo **Revisión editorial** organiza las noticias en Borrador, En revisión, Aprobada y Cambios solicitados. Un responsable puede preparar el contenido y enviarlo a revisión; un Administrador o Editor puede aprobarlo o devolverlo con observaciones claras. También permite elegir una fotografía desde la computadora, revisar su vista previa, reemplazarla o retirarla antes de publicar.
 
 Solo las noticias aprobadas aparecen listas para enviarse desde **Publicaciones**. Si una noticia aprobada se edita, vuelve automáticamente a Borrador para evitar que se publique contenido distinto al revisado.
 
@@ -228,4 +231,4 @@ iniciar.bat          Arranque automático para Windows
 
 ## Alcance de esta versión
 
-La v1.5 administra noticias, cobertura automática local, revisión y aprobación editorial, agenda, equipo, permisos, automatizaciones supervisadas, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Incorpora deduplicación, calendario, análisis, reportes exportables, auditoría, alertas y respaldos sin perder los datos de versiones anteriores. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.
+La v1.16 administra noticias, cobertura automática local, revisión y aprobación editorial, fotografías locales, agenda, equipo, permisos, automatizaciones supervisadas, fuentes RSS/Atom y publicaciones autorizadas de Facebook. Incorpora deduplicación, calendario, análisis, reportes exportables, auditoría, alertas y respaldos sin perder los datos de versiones anteriores. Ningún contenido se publica ni ninguna ubicación sugerida se confirma sin intervención humana.

@@ -10,6 +10,7 @@
 /backend/__pycache__/
 /backend/*.db
 /backend/backups/
+/backend/uploads/
 
 # local environment
 .env*

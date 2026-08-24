@@ -8,6 +8,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlparse
 
 temporary_directory = tempfile.TemporaryDirectory()
 test_admin_user = "test-admin"
@@ -18,6 +19,7 @@ os.environ["PULSO_SECRET_KEY"] = secrets.token_urlsafe(48)
 os.environ["PULSO_DATABASE_PATH"] = str(Path(temporary_directory.name) / "test.db")
 os.environ["PULSO_ENV_PATH"] = str(Path(temporary_directory.name) / ".env")
 os.environ["PULSO_BACKUP_DIR"] = str(Path(temporary_directory.name) / "backups")
+os.environ["PULSO_UPLOAD_DIR"] = str(Path(temporary_directory.name) / "uploads")
 os.environ["PULSO_AUTO_GEOLOCATION"] = "0"
 os.environ.pop("OPENAI_API_KEY", None)
 os.environ.pop("FACEBOOK_PAGE_ACCESS_TOKEN", None)
@@ -46,7 +48,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.15.0")
+        self.assertEqual(health.json()["version"], "1.16.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -639,6 +641,39 @@ class PulsoMonitorApiTests(unittest.TestCase):
         with self.assertRaises(main.HTTPException) as rejected:
             main.validate_editorial_image("https://medio.example/assets/logotipo-principal.jpg")
         self.assertEqual(rejected.exception.status_code, 422)
+
+    def test_editorial_photo_can_be_uploaded_viewed_and_removed(self):
+        photo = Image.new("RGB", (900, 520))
+        pixels = photo.load()
+        for y in range(photo.height):
+            for x in range(photo.width):
+                pixels[x, y] = ((x * 13 + y * 5) % 256, (x * 7 + y * 17) % 256, (x * 19 + y * 3) % 256)
+        photo_bytes = io.BytesIO()
+        photo.save(photo_bytes, format="PNG")
+        created = self.client.post("/api/noticias", headers=self.headers, json={
+            "title": "Fotografía local de prueba", "summary": "Resumen", "content": "Contenido",
+            "source": "Manual", "author": "Pulso", "municipality": "Tequila", "category": "General",
+            "priority": "Media", "status": "Pendiente", "image_url": "", "url": "",
+            "published_at": None, "is_ai": False, "tags": [],
+        })
+        news_id = created.json()["id"]
+        with patch.object(main, "image_bytes_look_like_logo", return_value=False):
+            uploaded = self.client.post(
+                f"/api/noticias/{news_id}/imagen/archivo", headers=self.headers,
+                files={"image": ("fotografia.png", photo_bytes.getvalue(), "image/png")},
+            )
+        self.assertEqual(uploaded.status_code, 200)
+        image_url = uploaded.json()["image_url"]
+        self.assertIn(f"/api/imagenes/noticia-{news_id}-", image_url)
+        image_response = self.client.get(urlparse(image_url).path)
+        self.assertEqual(image_response.status_code, 200)
+        self.assertEqual(image_response.headers["content-type"], "image/jpeg")
+        removed = self.client.put(
+            f"/api/noticias/{news_id}/imagen", headers=self.headers, json={"image_url": ""},
+        )
+        self.assertEqual(removed.status_code, 200)
+        self.assertEqual(removed.json()["image_url"], "")
+        self.assertEqual(self.client.get(urlparse(image_url).path).status_code, 404)
 
     def test_image_backfill_discards_repeated_cover_without_replacement(self):
         ids = []

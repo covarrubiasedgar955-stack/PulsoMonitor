@@ -22,6 +22,10 @@ function imageStyle(value: string) {
   return value ? { backgroundImage: `url("${value.replaceAll('"', "%22")}")` } : undefined;
 }
 
+function isLocalImage(value: string) {
+  return /^https?:\/\/(127\.0\.0\.1|localhost):8000\/api\/imagenes\//.test(value);
+}
+
 export default function EditorialReviewPage() {
   const [board, setBoard] = useState<EditorialBoard | null>(null);
   const [team, setTeam] = useState<UserInfo[]>([]);
@@ -40,6 +44,9 @@ export default function EditorialReviewPage() {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<EditorialItem | null>(null);
   const [imageUrl, setImageUrl] = useState("");
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState("");
+  const [uploadInputKey, setUploadInputKey] = useState(0);
   const [noteAction, setNoteAction] = useState<EditorialAction | null>(null);
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(true);
@@ -77,8 +84,18 @@ export default function EditorialReviewPage() {
   }, [load]);
 
   useEffect(() => {
-    setImageUrl(selected?.image_url || "");
+    setImageUrl(selected?.image_url && !isLocalImage(selected.image_url) ? selected.image_url : "");
+    setImageFile(null);
+    setImagePreview("");
+    setUploadInputKey((value) => value + 1);
   }, [selected?.id, selected?.image_url]);
+
+  useEffect(() => {
+    if (!imageFile) return;
+    const preview = URL.createObjectURL(imageFile);
+    setImagePreview(preview);
+    return () => URL.revokeObjectURL(preview);
+  }, [imageFile]);
 
   const canReview = user?.role === "Administrador" || user?.role === "Editor";
   const visibleItems = useMemo(() => board?.items || [], [board]);
@@ -136,6 +153,35 @@ export default function EditorialReviewPage() {
       await load();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No se pudo actualizar la imagen.");
+    } finally { setSaving(false); }
+  }
+
+  function chooseImage(file: File | undefined) {
+    setError(""); setMessage("");
+    if (!file) { setImageFile(null); return; }
+    if (!(["image/jpeg", "image/png", "image/webp"].includes(file.type))) {
+      setError("Selecciona una fotografía JPEG, PNG o WebP.");
+      setImageFile(null); return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      setError("La fotografía debe pesar menos de 8 MB.");
+      setImageFile(null); return;
+    }
+    setImageFile(file);
+  }
+
+  async function uploadImage() {
+    if (!selected || !imageFile) return;
+    setSaving(true); setError(""); setMessage("");
+    try {
+      const updated = await api.uploadEditorialImage(selected.id, imageFile);
+      setSelected(updated);
+      setImageUrl("");
+      setImageFile(null);
+      setMessage("La fotografía se subió y quedó lista para publicar en Facebook.");
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No se pudo subir la fotografía.");
     } finally { setSaving(false); }
   }
 
@@ -227,9 +273,16 @@ export default function EditorialReviewPage() {
               <div className={`editorial-detail-image ${selected.image_url ? "has-image" : ""}`} style={imageStyle(selected.image_url)}>{selected.image_url ? "" : "Sin imagen disponible"}</div>
               {canReview && <div className="editorial-image-control">
                 <strong>Fotografía de la noticia</strong>
-                <p>Pega la dirección directa de una fotografía real. Pulso Monitor rechazará logotipos, íconos y banners.</p>
+                <p>Selecciona una foto desde tu computadora o pega una dirección directa. Pulso Monitor rechazará logotipos, íconos y banners.</p>
+                <label className="editorial-file-picker">
+                  <span>{imageFile ? imageFile.name : "Elegir fotografía de la computadora"}</span>
+                  <input key={uploadInputKey} type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => chooseImage(event.target.files?.[0])} disabled={saving} />
+                </label>
+                {imagePreview && <div className="editorial-upload-preview" style={imageStyle(imagePreview)}><span>Vista previa</span></div>}
+                <button className="button primary" disabled={saving || !imageFile} onClick={() => void uploadImage()}>{saving ? "Subiendo…" : "Subir fotografía"}</button>
+                <span className="editorial-image-divider">o utiliza una dirección de Internet</span>
                 <input type="url" value={imageUrl} onChange={(event) => setImageUrl(event.target.value)} placeholder="https://sitio.com/fotografia.jpg" disabled={saving} />
-                <div><button className="button primary" disabled={saving || !imageUrl.trim()} onClick={() => void updateImage(false)}>Validar y guardar</button><button className="button danger-outline" disabled={saving || !selected.image_url} onClick={() => void updateImage(true)}>Quitar imagen</button></div>
+                <div className="editorial-image-url-actions"><button className="button primary" disabled={saving || !imageUrl.trim()} onClick={() => void updateImage(false)}>Validar y guardar</button><button className="button danger-outline" disabled={saving || !selected.image_url} onClick={() => void updateImage(true)}>Quitar imagen</button></div>
               </div>}
               <div className="detail-status"><span className={stateClass(selected.editorial_state)}>{selected.editorial_state}</span><span className={`priority priority-${selected.priority.toLowerCase()}`}>{selected.priority}</span></div>
               <p>{selected.summary || "Esta noticia todavía no tiene resumen."}</p>
