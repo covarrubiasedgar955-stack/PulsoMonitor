@@ -384,6 +384,10 @@ export interface FacebookStatus {
   graph_version: string;
   last_sync: string | null;
   last_error: string;
+  health: "disconnected" | "ok" | "network" | "token_expired" | "permissions" | "page_error" | "unknown";
+  health_message: string;
+  needs_reconnect: boolean;
+  checked_at: string | null;
   posts: number;
   pending: number;
   imported: number;
