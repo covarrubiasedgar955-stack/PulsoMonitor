@@ -108,8 +108,10 @@ export default function RadarPage() {
     try {
       const result = await api.scanRadar(sourceId);
       const detected = `${result.detected} publicación${result.detected === 1 ? " nueva" : "es nuevas"}`;
-      const cleaned = result.cleaned ? ` · ${result.cleaned} hallazgo${result.cleaned === 1 ? " descartado" : "s antiguos o fuera de cobertura descartados"}` : "";
-      setMessage(`Escaneo terminado: ${detected} · ${result.imported} borrador${result.imported === 1 ? " creado" : "es creados"}${cleaned}.`);
+      const cleaned = result.cleaned ? ` · ${result.cleaned} antiguo${result.cleaned === 1 ? "" : "s"} eliminado${result.cleaned === 1 ? "" : "s"}` : "";
+      const filtered = result.filtered ? ` · ${result.filtered} fuera de cobertura` : "";
+      const duplicates = result.duplicates ? ` · ${result.duplicates} duplicado${result.duplicates === 1 ? "" : "s"} bloqueado${result.duplicates === 1 ? "" : "s"}` : "";
+      setMessage(`Escaneo terminado: ${detected} publicación${result.detected === 1 ? "" : "es"} útil${result.detected === 1 ? "" : "es"} · ${result.imported} borrador${result.imported === 1 ? " creado" : "es creados"}${filtered}${duplicates}${cleaned}.`);
       if (result.errors.length) setError(result.errors.join(" · "));
       await load();
     } catch (caught) {
@@ -187,7 +189,7 @@ export default function RadarPage() {
           <div className="finding-list">
             {items.map((item) => (
               <article className="finding-card" key={item.id}>
-                <div className="finding-main"><div className="finding-badges"><span className="tag">{item.source_name}</span><span>{item.municipality}</span><span>{dateTime(item.published_at || item.detected_at)}</span></div><h3>{item.title}</h3>{item.summary && <p>{item.summary}</p>}</div>
+                <div className="finding-main"><div className="finding-badges"><span className="tag">{item.source_name}</span><span>{item.municipality}</span><span className="tag">Relevancia {item.relevance_level} · {item.relevance_score}</span><span>{dateTime(item.published_at || item.detected_at)}</span></div><h3>{item.title}</h3>{item.summary && <p>{item.summary}</p>}{item.relevance_reason && <small>Por qué se seleccionó: {item.relevance_reason}</small>}</div>
                 <div className="finding-actions">{item.url && <a className="button secondary" href={item.url} target="_blank" rel="noreferrer">Abrir fuente ↗</a>}{item.imported_news_id ? <span className="imported-badge">✓ Importada</span> : <button className="button primary" onClick={() => importItem(item)} disabled={importing === item.id}>{importing === item.id ? "Importando…" : "Importar a Noticias"}</button>}</div>
               </article>
             ))}
