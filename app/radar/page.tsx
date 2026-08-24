@@ -107,7 +107,6 @@ export default function RadarPage() {
     setMessage("");
     try {
       const result = await api.scanRadar(sourceId);
-      const detected = `${result.detected} publicación${result.detected === 1 ? " nueva" : "es nuevas"}`;
       const cleaned = result.cleaned ? ` · ${result.cleaned} antiguo${result.cleaned === 1 ? "" : "s"} eliminado${result.cleaned === 1 ? "" : "s"}` : "";
       const filtered = result.filtered ? ` · ${result.filtered} fuera de cobertura` : "";
       const duplicates = result.duplicates ? ` · ${result.duplicates} duplicado${result.duplicates === 1 ? "" : "s"} bloqueado${result.duplicates === 1 ? "" : "s"}` : "";
