@@ -434,6 +434,10 @@ export const api = {
     return request<FacebookStatus>("/api/facebook/estado");
   },
 
+  diagnoseFacebook() {
+    return request<FacebookStatus>("/api/facebook/diagnostico", { method: "POST" });
+  },
+
   connectFacebook(pageId: string, pageAccessToken: string) {
     return request<FacebookStatus>("/api/facebook/conectar", {
       method: "POST",
