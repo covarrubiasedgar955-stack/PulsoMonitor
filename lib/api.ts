@@ -271,6 +271,13 @@ export const api = {
     });
   },
 
+  updateEditorialImage(id: number, imageUrl: string) {
+    return request<EditorialItem>(`/api/noticias/${id}/imagen`, {
+      method: "PUT",
+      body: JSON.stringify({ image_url: imageUrl }),
+    });
+  },
+
   updateEditorialBatch(action: "assign" | "archive" | "delete", newsIds: number[], assignedTo: number | null = null) {
     return request<EditorialBatchResult>("/api/flujo-editorial/lote", {
       method: "POST",

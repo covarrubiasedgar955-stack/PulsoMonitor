@@ -711,6 +711,15 @@ class NewsLocationRequest(BaseModel):
     longitude: float = Field(ge=-180, le=180)
 
 
+class NewsImageRequest(BaseModel):
+    image_url: str = Field(default="", max_length=1200)
+
+    @field_validator("image_url")
+    @classmethod
+    def clean_image_url(cls, value: str) -> str:
+        return unescape(value).strip()
+
+
 class EditorialItem(NewsItem):
     assigned_name: str = "Sin asignar"
     approved_by_name: str = ""
@@ -2568,6 +2577,8 @@ def cleanup_out_of_coverage_radar_items() -> int:
 GENERIC_IMAGE_HINTS = (
     "favicon", "placeholder", "no-image", "no_image", "sin-imagen", "sin_imagen",
     "default-image", "default_image", "site-logo", "site_logo", "brand-logo", "brand_logo",
+    "google-news", "google_news", "logotipo", "branding", "masthead", "sprite",
+    "apple-touch-icon", "social-logo", "social_logo",
 )
 
 GENERIC_IMAGE_HOSTS = (
@@ -2668,6 +2679,19 @@ def news_image_looks_like_logo(image_url: str) -> bool:
             return False
     except (ValueError, httpx.HTTPError, UnidentifiedImageError, OSError, ImportError, ZeroDivisionError):
         return True
+
+
+def validate_editorial_image(image_url: str) -> str:
+    """Accept only a downloadable editorial photograph, never a logo or placeholder."""
+    accepted = valid_public_image_url(image_url)
+    if not accepted:
+        raise HTTPException(status_code=422, detail="Escribe una dirección pública válida para la imagen.")
+    if looks_generic_news_image(accepted) or news_image_looks_like_logo(accepted):
+        raise HTTPException(
+            status_code=422,
+            detail="La imagen parece ser un logotipo, ícono, banner o archivo genérico. Elige una fotografía de la noticia.",
+        )
+    return accepted
 
 
 def backfill_news_images(limit: int = 8, max_seconds: float = 75) -> tuple[int, int, int]:
@@ -2915,7 +2939,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.14.0",
+    version="1.15.0",
     description="API local para administrar noticias, revisión editorial, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
@@ -2934,7 +2958,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.14.0"}
+    return {"status": "ok", "version": "1.15.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -4277,6 +4301,39 @@ def update_editorial_flow(
         "request_changes": "Solicitó cambios", "reopen": "Reabrió borrador",
     }
     audit(user, labels[payload.action], "noticia", news_id, str(updated["title"]))
+    return EditorialItem(**row_to_news(updated).model_dump(), assigned_name=updated["assigned_name"], approved_by_name=updated["approved_by_name"])
+
+
+@app.put("/api/noticias/{news_id}/imagen", response_model=EditorialItem)
+def update_editorial_image(
+    news_id: int,
+    payload: NewsImageRequest,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> EditorialItem:
+    require_role(user, "Administrador", "Editor")
+    now = utc_now()
+    with connection() as db:
+        current = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="La noticia no existe.")
+        if current["status"] in ("Programada", "Publicada") or current["facebook_post_id"]:
+            raise HTTPException(status_code=409, detail="La imagen ya no puede cambiarse después de programar o publicar.")
+
+        image_url = validate_editorial_image(payload.image_url) if payload.image_url else ""
+        db.execute(
+            "UPDATE noticias SET image_url = ?, image_checked_at = ?, updated_at = ? WHERE id = ?",
+            (image_url, now, now, news_id),
+        )
+        updated = db.execute(
+            """
+            SELECT n.*, COALESCE(u.name, 'Sin asignar') AS assigned_name,
+                   COALESCE(a.name, '') AS approved_by_name
+            FROM noticias n LEFT JOIN users u ON u.id = n.assigned_to
+            LEFT JOIN users a ON a.id = n.approved_by WHERE n.id = ?
+            """,
+            (news_id,),
+        ).fetchone()
+    audit(user, "Actualizó imagen editorial" if image_url else "Retiró imagen editorial", "noticia", news_id, str(updated["title"]))
     return EditorialItem(**row_to_news(updated).model_dump(), assigned_name=updated["assigned_name"], approved_by_name=updated["approved_by_name"])
 
 
