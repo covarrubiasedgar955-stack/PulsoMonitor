@@ -46,7 +46,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.5.0")
+        self.assertEqual(health.json()["version"], "1.15.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -629,6 +629,16 @@ class PulsoMonitorApiTests(unittest.TestCase):
         google_logo.save(google_bytes, format="PNG")
         with patch.object(main, "fetch_feed_bytes", return_value=google_bytes.getvalue()):
             self.assertTrue(main.news_image_looks_like_logo("https://medio.example/portada-aleatoria.png"))
+
+    def test_editorial_image_validation_rejects_logos_and_accepts_photos(self):
+        self.assertTrue(main.looks_generic_news_image("https://news.google.com/assets/google-news.png"))
+        self.assertTrue(main.looks_generic_news_image("https://medio.example/assets/logotipo-principal.jpg"))
+        with patch.object(main, "news_image_looks_like_logo", return_value=False):
+            accepted = main.validate_editorial_image("https://medio.example/noticias/fotografia-real.jpg")
+        self.assertEqual(accepted, "https://medio.example/noticias/fotografia-real.jpg")
+        with self.assertRaises(main.HTTPException) as rejected:
+            main.validate_editorial_image("https://medio.example/assets/logotipo-principal.jpg")
+        self.assertEqual(rejected.exception.status_code, 422)
 
     def test_image_backfill_discards_repeated_cover_without_replacement(self):
         ids = []

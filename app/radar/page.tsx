@@ -110,7 +110,7 @@ export default function RadarPage() {
       const cleaned = result.cleaned ? ` · ${result.cleaned} antiguo${result.cleaned === 1 ? "" : "s"} eliminado${result.cleaned === 1 ? "" : "s"}` : "";
       const filtered = result.filtered ? ` · ${result.filtered} fuera de cobertura` : "";
       const duplicates = result.duplicates ? ` · ${result.duplicates} duplicado${result.duplicates === 1 ? "" : "s"} bloqueado${result.duplicates === 1 ? "" : "s"}` : "";
-      setMessage(`Escaneo terminado: ${detected} publicación${result.detected === 1 ? "" : "es"} útil${result.detected === 1 ? "" : "es"} · ${result.imported} borrador${result.imported === 1 ? " creado" : "es creados"}${filtered}${duplicates}${cleaned}.`);
+      setMessage(`Escaneo terminado: ${result.detected} publicación${result.detected === 1 ? "" : "es"} útil${result.detected === 1 ? "" : "es"} · ${result.imported} borrador${result.imported === 1 ? " creado" : "es creados"}${filtered}${duplicates}${cleaned}.`);
       if (result.errors.length) setError(result.errors.join(" · "));
       await load();
     } catch (caught) {

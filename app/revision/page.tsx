@@ -39,6 +39,7 @@ export default function EditorialReviewPage() {
   const [batchAssignee, setBatchAssignee] = useState("");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<EditorialItem | null>(null);
+  const [imageUrl, setImageUrl] = useState("");
   const [noteAction, setNoteAction] = useState<EditorialAction | null>(null);
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(true);
@@ -74,6 +75,10 @@ export default function EditorialReviewPage() {
     const timer = window.setTimeout(() => void load(), 250);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  useEffect(() => {
+    setImageUrl(selected?.image_url || "");
+  }, [selected?.id, selected?.image_url]);
 
   const canReview = user?.role === "Administrador" || user?.role === "Editor";
   const visibleItems = useMemo(() => board?.items || [], [board]);
@@ -112,6 +117,25 @@ export default function EditorialReviewPage() {
       await load();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No se pudo asignar la noticia.");
+    } finally { setSaving(false); }
+  }
+
+  async function updateImage(remove = false) {
+    if (!selected) return;
+    const nextImage = remove ? "" : imageUrl.trim();
+    if (!remove && !nextImage) {
+      setError("Pega primero la dirección de una fotografía.");
+      return;
+    }
+    setSaving(true); setError(""); setMessage("");
+    try {
+      const updated = await api.updateEditorialImage(selected.id, nextImage);
+      setSelected(updated);
+      setImageUrl(updated.image_url);
+      setMessage(remove ? "La imagen fue retirada. La noticia se publicará sin fotografía." : "Fotografía validada y actualizada.");
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No se pudo actualizar la imagen.");
     } finally { setSaving(false); }
   }
 
@@ -201,6 +225,12 @@ export default function EditorialReviewPage() {
             <div className="panel-header"><div><p className="eyebrow">EXPEDIENTE EDITORIAL</p><h2>{selected.title}</h2></div></div>
             <div className="editorial-detail-body">
               <div className={`editorial-detail-image ${selected.image_url ? "has-image" : ""}`} style={imageStyle(selected.image_url)}>{selected.image_url ? "" : "Sin imagen disponible"}</div>
+              {canReview && <div className="editorial-image-control">
+                <strong>Fotografía de la noticia</strong>
+                <p>Pega la dirección directa de una fotografía real. Pulso Monitor rechazará logotipos, íconos y banners.</p>
+                <input type="url" value={imageUrl} onChange={(event) => setImageUrl(event.target.value)} placeholder="https://sitio.com/fotografia.jpg" disabled={saving} />
+                <div><button className="button primary" disabled={saving || !imageUrl.trim()} onClick={() => void updateImage(false)}>Validar y guardar</button><button className="button danger-outline" disabled={saving || !selected.image_url} onClick={() => void updateImage(true)}>Quitar imagen</button></div>
+              </div>}
               <div className="detail-status"><span className={stateClass(selected.editorial_state)}>{selected.editorial_state}</span><span className={`priority priority-${selected.priority.toLowerCase()}`}>{selected.priority}</span></div>
               <p>{selected.summary || "Esta noticia todavía no tiene resumen."}</p>
               <dl><div><dt>Responsable</dt><dd>{selected.assigned_name}</dd></div><div><dt>Municipio</dt><dd>{selected.municipality}</dd></div><div><dt>Categoría</dt><dd>{selected.category}</dd></div><div><dt>Último cambio</dt><dd>{when(selected.updated_at)}</dd></div></dl>
