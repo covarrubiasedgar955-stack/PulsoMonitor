@@ -25,8 +25,8 @@ from urllib.parse import quote_plus, urljoin, urlparse
 
 import feedparser
 import httpx
-from PIL import Image, UnidentifiedImageError
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from PIL import Image, ImageOps, UnidentifiedImageError
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -38,6 +38,7 @@ ENV_PATH = Path(os.getenv("PULSO_ENV_PATH", str(BASE_DIR / ".env")))
 load_dotenv(ENV_PATH)
 DATABASE_PATH = Path(os.getenv("PULSO_DATABASE_PATH", str(BASE_DIR / "pulso_monitor.db")))
 BACKUP_DIR = Path(os.getenv("PULSO_BACKUP_DIR", str(BASE_DIR / "backups")))
+EDITORIAL_UPLOAD_DIR = Path(os.getenv("PULSO_UPLOAD_DIR", str(BASE_DIR / "uploads")))
 ADMIN_USER = os.getenv("PULSO_ADMIN_USER", "").strip()
 ADMIN_PASSWORD = os.getenv("PULSO_ADMIN_PASSWORD", "").strip()
 SECRET_KEY = os.getenv("PULSO_SECRET_KEY", "").strip()
@@ -2155,7 +2156,7 @@ def prune_automatic_drafts(max_per_municipality: int = 20, days: int = 7) -> int
     """Keep a small, recent and unique automatic inbox without touching editorial work."""
     with connection() as db:
         rows = db.execute(
-            """SELECT id, title, summary, municipality, published_at, created_at FROM noticias
+            """SELECT id, title, summary, municipality, published_at, created_at, image_url FROM noticias
             WHERE author = 'Cobertura automática' AND editorial_state = 'Borrador'
               AND status = 'Pendiente' AND assigned_to IS NULL
             ORDER BY datetime(COALESCE(published_at, created_at)) DESC, id DESC"""
@@ -2194,6 +2195,10 @@ def prune_automatic_drafts(max_per_municipality: int = 20, days: int = 7) -> int
         placeholders = ",".join("?" for _ in delete_ids)
         db.execute(f"DELETE FROM radar_items WHERE imported_news_id IN ({placeholders})", delete_ids)
         db.execute(f"DELETE FROM noticias WHERE id IN ({placeholders})", delete_ids)
+    deleted_ids = set(delete_ids)
+    for row in rows:
+        if row["id"] in deleted_ids:
+            remove_local_editorial_image(str(row["image_url"] or ""))
     return len(delete_ids)
 
 
@@ -2419,6 +2424,27 @@ def facebook_graph_post(path: str, token: str, params: dict[str, str]) -> dict:
     return data
 
 
+def facebook_graph_post_photo(path: str, token: str, params: dict[str, str], image_path: Path) -> dict:
+    url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
+    try:
+        with image_path.open("rb") as image_file:
+            response = httpx.post(
+                url,
+                data={**params, "access_token": token},
+                files={"source": (image_path.name, image_file, "image/jpeg")},
+                timeout=45,
+                headers={"User-Agent": "PulsoMonitor/1.16"},
+            )
+        data = response.json()
+    except (httpx.HTTPError, OSError, ValueError) as error:
+        raise ValueError("No fue posible enviar la fotografía a Meta.") from error
+    if not response.is_success or data.get("error"):
+        api_error = data.get("error") or {}
+        message = clean_feed_text(str(api_error.get("message") or "Meta rechazó la fotografía."), 350)
+        raise ValueError(message)
+    return data
+
+
 def facebook_graph_delete(path: str, token: str) -> dict:
     url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}"
     try:
@@ -2525,12 +2551,14 @@ def cleanup_unused_news(days: int = 7) -> int:
         AND datetime(COALESCE(published_at, created_at)) < datetime(?)
     """
     with connection() as db:
-        total = int(db.execute(f"SELECT COUNT(*) FROM noticias WHERE {predicate}", (cutoff,)).fetchone()[0])
-    if total == 0:
+        rows = db.execute(f"SELECT id, image_url FROM noticias WHERE {predicate}", (cutoff,)).fetchall()
+    if not rows:
         return 0
     create_database_backup()
     with connection() as db:
         cursor = db.execute(f"DELETE FROM noticias WHERE {predicate}", (cutoff,))
+    for row in rows:
+        remove_local_editorial_image(str(row["image_url"] or ""))
     return int(cursor.rowcount)
 
 
@@ -2631,12 +2659,9 @@ def news_image_fingerprint(image_url: str) -> str:
         return ""
 
 
-def news_image_looks_like_logo(image_url: str) -> bool:
-    """Reject brand artwork and image URLs that can no longer be downloaded."""
-    if not image_url:
-        return True
+def image_bytes_look_like_logo(image_bytes: bytes) -> bool:
+    """Reject small, transparent, flat or Google-style brand artwork."""
     try:
-        image_bytes = fetch_feed_bytes(image_url, timeout=5)
         with Image.open(io.BytesIO(image_bytes)) as image:
             width, height = image.size
             if width < 180 or height < 180:
@@ -2681,6 +2706,16 @@ def news_image_looks_like_logo(image_url: str) -> bool:
         return True
 
 
+def news_image_looks_like_logo(image_url: str) -> bool:
+    """Reject brand artwork and image URLs that can no longer be downloaded."""
+    if not image_url:
+        return True
+    try:
+        return image_bytes_look_like_logo(fetch_feed_bytes(image_url, timeout=5))
+    except (ValueError, httpx.HTTPError, OSError):
+        return True
+
+
 def validate_editorial_image(image_url: str) -> str:
     """Accept only a downloadable editorial photograph, never a logo or placeholder."""
     accepted = valid_public_image_url(image_url)
@@ -2692,6 +2727,55 @@ def validate_editorial_image(image_url: str) -> str:
             detail="La imagen parece ser un logotipo, ícono, banner o archivo genérico. Elige una fotografía de la noticia.",
         )
     return accepted
+
+
+def local_editorial_image_path(image_url: str) -> Path | None:
+    """Resolve only image URLs created by Pulso Monitor inside its upload directory."""
+    try:
+        parsed = urlparse(unescape(str(image_url or "")).strip())
+    except ValueError:
+        return None
+    prefix = "/api/imagenes/"
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"127.0.0.1", "localhost"} or not parsed.path.startswith(prefix):
+        return None
+    filename = Path(parsed.path.removeprefix(prefix)).name
+    if not re.fullmatch(r"noticia-\d+-[a-f0-9]{16}\.jpg", filename):
+        return None
+    candidate = EDITORIAL_UPLOAD_DIR / filename
+    return candidate if candidate.is_file() else None
+
+
+def remove_local_editorial_image(image_url: str) -> None:
+    path = local_editorial_image_path(image_url)
+    if path:
+        path.unlink(missing_ok=True)
+
+
+def save_editorial_upload(news_id: int, image_bytes: bytes) -> str:
+    if not image_bytes or len(image_bytes) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="La fotografía debe pesar menos de 8 MB.")
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            source.verify()
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            width, height = image.size
+            if min(width, height) < 320 or max(width, height) < 640:
+                raise HTTPException(status_code=422, detail="La fotografía es demasiado pequeña. Usa una imagen de al menos 640 × 320 píxeles.")
+            image.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=88, optimize=True)
+            normalized = output.getvalue()
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as error:
+        raise HTTPException(status_code=422, detail="El archivo no es una fotografía JPEG, PNG o WebP válida.") from error
+    if image_bytes_look_like_logo(normalized):
+        raise HTTPException(status_code=422, detail="La imagen parece ser un logotipo, ícono o banner. Selecciona una fotografía real de la noticia.")
+    EDITORIAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"noticia-{news_id}-{secrets.token_hex(8)}.jpg"
+    (EDITORIAL_UPLOAD_DIR / filename).write_bytes(normalized)
+    return f"http://127.0.0.1:8000/api/imagenes/{filename}"
 
 
 def backfill_news_images(limit: int = 8, max_seconds: float = 75) -> tuple[int, int, int]:
@@ -2939,7 +3023,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.15.0",
+    version="1.16.0",
     description="API local para administrar noticias, revisión editorial, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
@@ -2958,7 +3042,17 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.15.0"}
+    return {"status": "ok", "version": "1.16.0"}
+
+
+@app.get("/api/imagenes/{filename}")
+def editorial_image(filename: str) -> FileResponse:
+    if not re.fullmatch(r"noticia-\d+-[a-f0-9]{16}\.jpg", filename):
+        raise HTTPException(status_code=404, detail="La imagen no existe.")
+    path = EDITORIAL_UPLOAD_DIR / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="La imagen no existe.")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -4320,6 +4414,7 @@ def update_editorial_image(
             raise HTTPException(status_code=409, detail="La imagen ya no puede cambiarse después de programar o publicar.")
 
         image_url = validate_editorial_image(payload.image_url) if payload.image_url else ""
+        previous_image = str(current["image_url"] or "")
         db.execute(
             "UPDATE noticias SET image_url = ?, image_checked_at = ?, updated_at = ? WHERE id = ?",
             (image_url, now, now, news_id),
@@ -4333,7 +4428,46 @@ def update_editorial_image(
             """,
             (news_id,),
         ).fetchone()
+    if previous_image != image_url:
+        remove_local_editorial_image(previous_image)
     audit(user, "Actualizó imagen editorial" if image_url else "Retiró imagen editorial", "noticia", news_id, str(updated["title"]))
+    return EditorialItem(**row_to_news(updated).model_dump(), assigned_name=updated["assigned_name"], approved_by_name=updated["approved_by_name"])
+
+
+@app.post("/api/noticias/{news_id}/imagen/archivo", response_model=EditorialItem)
+async def upload_editorial_image(
+    news_id: int,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+    image: Annotated[UploadFile, File()],
+) -> EditorialItem:
+    require_role(user, "Administrador", "Editor")
+    if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=422, detail="Selecciona una fotografía JPEG, PNG o WebP.")
+    with connection() as db:
+        current = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
+    if current is None:
+        raise HTTPException(status_code=404, detail="La noticia no existe.")
+    if current["status"] in ("Programada", "Publicada") or current["facebook_post_id"]:
+        raise HTTPException(status_code=409, detail="La imagen ya no puede cambiarse después de programar o publicar.")
+
+    image_url = save_editorial_upload(news_id, await image.read(8 * 1024 * 1024 + 1))
+    now = utc_now()
+    with connection() as db:
+        db.execute(
+            "UPDATE noticias SET image_url = ?, image_checked_at = ?, updated_at = ? WHERE id = ?",
+            (image_url, now, now, news_id),
+        )
+        updated = db.execute(
+            """
+            SELECT n.*, COALESCE(u.name, 'Sin asignar') AS assigned_name,
+                   COALESCE(a.name, '') AS approved_by_name
+            FROM noticias n LEFT JOIN users u ON u.id = n.assigned_to
+            LEFT JOIN users a ON a.id = n.approved_by WHERE n.id = ?
+            """,
+            (news_id,),
+        ).fetchone()
+    remove_local_editorial_image(str(current["image_url"] or ""))
+    audit(user, "Subió fotografía editorial", "noticia", news_id, str(updated["title"]))
     return EditorialItem(**row_to_news(updated).model_dump(), assigned_name=updated["assigned_name"], approved_by_name=updated["approved_by_name"])
 
 
@@ -4348,7 +4482,7 @@ def update_editorial_batch(
     now = utc_now()
     with connection() as db:
         rows = db.execute(
-            f"SELECT id, title, status, editorial_state, facebook_post_id FROM noticias WHERE id IN ({placeholders})",
+            f"SELECT id, title, status, editorial_state, facebook_post_id, image_url FROM noticias WHERE id IN ({placeholders})",
             news_ids,
         ).fetchall()
         editable = [
@@ -4376,6 +4510,9 @@ def update_editorial_batch(
             else:
                 db.execute(f"DELETE FROM radar_items WHERE imported_news_id IN ({editable_placeholders})", editable_ids)
                 db.execute(f"DELETE FROM noticias WHERE id IN ({editable_placeholders})", editable_ids)
+    if payload.action == "delete":
+        for row in editable:
+            remove_local_editorial_image(str(row["image_url"] or ""))
     updated = len(editable_ids)
     protected = len(news_ids) - updated
     audit(user, f"Acción editorial por lote: {payload.action}", "noticia", ",".join(map(str, editable_ids)), f"{updated} actualizadas; {protected} protegidas")
@@ -4695,13 +4832,17 @@ def publish_news_to_facebook(
 
     now_dt = datetime.now(timezone.utc)
     raw_image_url = unescape(str(row["image_url"] or "")).strip()
+    local_image_path = local_editorial_image_path(raw_image_url)
     try:
         parsed_image_url = urlparse(raw_image_url)
         has_publishable_image = bool(
-            parsed_image_url.scheme in {"http", "https"}
-            and parsed_image_url.hostname
-            and not looks_generic_news_image(raw_image_url)
-            and not news_image_looks_like_logo(raw_image_url)
+            local_image_path
+            or (
+                parsed_image_url.scheme in {"http", "https"}
+                and parsed_image_url.hostname
+                and not looks_generic_news_image(raw_image_url)
+                and not news_image_looks_like_logo(raw_image_url)
+            )
         )
     except ValueError:
         has_publishable_image = False
@@ -4733,7 +4874,7 @@ def publish_news_to_facebook(
         published_at = None
 
     try:
-        result = facebook_graph_post(facebook_endpoint, token, params)
+        result = facebook_graph_post_photo(facebook_endpoint, token, params, local_image_path) if local_image_path else facebook_graph_post(facebook_endpoint, token, params)
     except ValueError as error:
         raise HTTPException(
             status_code=400,
@@ -4813,7 +4954,7 @@ def cancel_facebook_schedule(
 def delete_news(news_id: int, user: Annotated[AuthenticatedUser, Depends(current_user)]) -> Response:
     require_role(user, "Administrador", "Editor")
     with connection() as db:
-        existing = db.execute("SELECT status, facebook_post_id FROM noticias WHERE id = ?", (news_id,)).fetchone()
+        existing = db.execute("SELECT status, facebook_post_id, image_url FROM noticias WHERE id = ?", (news_id,)).fetchone()
         if existing is not None and existing["status"] == "Programada" and existing["facebook_post_id"]:
             raise HTTPException(
                 status_code=409,
@@ -4827,6 +4968,7 @@ def delete_news(news_id: int, user: Annotated[AuthenticatedUser, Depends(current
         cursor = db.execute("DELETE FROM noticias WHERE id = ?", (news_id,))
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="La noticia no existe.")
+    remove_local_editorial_image(str(existing["image_url"] or ""))
     audit(user, "Eliminó noticia", "noticia", news_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

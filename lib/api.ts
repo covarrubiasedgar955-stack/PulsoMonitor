@@ -79,12 +79,13 @@ function normalizeApiData(value: unknown): unknown {
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const authToken = token();
+  const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
   let response: Response;
   try {
     response = await fetch(`${API_URL}${path}`, {
       ...init,
       headers: {
-        "Content-Type": "application/json",
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
         ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         ...init.headers,
       },
@@ -275,6 +276,15 @@ export const api = {
     return request<EditorialItem>(`/api/noticias/${id}/imagen`, {
       method: "PUT",
       body: JSON.stringify({ image_url: imageUrl }),
+    });
+  },
+
+  uploadEditorialImage(id: number, image: File) {
+    const body = new FormData();
+    body.append("image", image);
+    return request<EditorialItem>(`/api/noticias/${id}/imagen/archivo`, {
+      method: "POST",
+      body,
     });
   },
 
