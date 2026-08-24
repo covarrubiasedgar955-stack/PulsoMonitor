@@ -383,6 +383,22 @@ def init_database() -> None:
             db.execute("ALTER TABLE radar_items ADD COLUMN relevance_reason TEXT NOT NULL DEFAULT ''")
         db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_detected ON radar_items(detected_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_imported ON radar_items(imported_news_id)")
+        legacy_radar_items = db.execute(
+            """
+            SELECT i.id, i.title, i.summary, s.municipality
+            FROM radar_items i JOIN radar_sources s ON s.id = i.source_id
+            WHERE i.relevance_score = 0
+            """
+        ).fetchall()
+        for legacy_item in legacy_radar_items:
+            score, level, reason = local_relevance_analysis(
+                legacy_item["title"], legacy_item["summary"], legacy_item["municipality"]
+            )
+            db.execute(
+                "UPDATE radar_items SET relevance_score = ?, relevance_level = ?, relevance_reason = ? WHERE id = ?",
+                (score, level, reason, legacy_item["id"]),
+            )
+        db.execute("DELETE FROM radar_items WHERE imported_news_id IS NULL AND relevance_score < 55")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS municipalities (
@@ -3548,7 +3564,7 @@ def list_radar_items(
             SELECT i.*, s.name AS source_name, s.municipality, s.category
             FROM radar_items i JOIN radar_sources s ON s.id = i.source_id
             {where}
-            ORDER BY COALESCE(i.published_at, i.detected_at) DESC, i.id DESC
+            ORDER BY i.relevance_score DESC, COALESCE(i.published_at, i.detected_at) DESC, i.id DESC
             LIMIT ? OFFSET ?
             """,
             (limit, offset),
