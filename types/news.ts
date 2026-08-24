@@ -353,6 +353,9 @@ export interface RadarItem {
   url: string;
   published_at: string | null;
   detected_at: string;
+  relevance_score: number;
+  relevance_level: "Alta" | "Media" | "Baja";
+  relevance_reason: string;
   imported_news_id: number | null;
 }
 
@@ -374,6 +377,8 @@ export interface RadarScanResult {
   detected: number;
   imported: number;
   cleaned: number;
+  filtered: number;
+  duplicates: number;
   errors: string[];
 }
 

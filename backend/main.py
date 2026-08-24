@@ -375,8 +375,30 @@ def init_database() -> None:
         radar_item_columns = {row["name"] for row in db.execute("PRAGMA table_info(radar_items)").fetchall()}
         if "image_url" not in radar_item_columns:
             db.execute("ALTER TABLE radar_items ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
+        if "relevance_score" not in radar_item_columns:
+            db.execute("ALTER TABLE radar_items ADD COLUMN relevance_score INTEGER NOT NULL DEFAULT 0")
+        if "relevance_level" not in radar_item_columns:
+            db.execute("ALTER TABLE radar_items ADD COLUMN relevance_level TEXT NOT NULL DEFAULT 'Media'")
+        if "relevance_reason" not in radar_item_columns:
+            db.execute("ALTER TABLE radar_items ADD COLUMN relevance_reason TEXT NOT NULL DEFAULT ''")
         db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_detected ON radar_items(detected_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_imported ON radar_items(imported_news_id)")
+        legacy_radar_items = db.execute(
+            """
+            SELECT i.id, i.title, i.summary, s.municipality
+            FROM radar_items i JOIN radar_sources s ON s.id = i.source_id
+            WHERE i.relevance_score = 0
+            """
+        ).fetchall()
+        for legacy_item in legacy_radar_items:
+            score, level, reason = local_relevance_analysis(
+                legacy_item["title"], legacy_item["summary"], legacy_item["municipality"]
+            )
+            db.execute(
+                "UPDATE radar_items SET relevance_score = ?, relevance_level = ?, relevance_reason = ? WHERE id = ?",
+                (score, level, reason, legacy_item["id"]),
+            )
+        db.execute("DELETE FROM radar_items WHERE imported_news_id IS NULL AND relevance_score < 55")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS municipalities (
@@ -974,6 +996,9 @@ class RadarItem(BaseModel):
     url: str
     published_at: str | None
     detected_at: str
+    relevance_score: int = Field(default=0, ge=0, le=100)
+    relevance_level: Literal["Alta", "Media", "Baja"] = "Media"
+    relevance_reason: str = ""
     imported_news_id: int | None
 
 
@@ -995,6 +1020,8 @@ class RadarScanResult(BaseModel):
     detected: int
     imported: int = 0
     cleaned: int = 0
+    filtered: int = 0
+    duplicates: int = 0
     errors: list[str]
 
 
@@ -2016,14 +2043,82 @@ def news_titles_are_similar(first: str, second: str) -> bool:
     return shared / min(len(left), len(right)) >= 0.60 and shared >= 4
 
 
-def radar_item_matches_coverage(title: str, summary: str, municipality: str) -> bool:
-    text = folded(f"{title} {summary}")
+def local_relevance_analysis(title: str, summary: str, municipality: str) -> tuple[int, str, str]:
+    title_text = folded(title)
+    summary_text = folded(summary)
+    text = f"{title_text} {summary_text}"
     place = folded(municipality)
-    if not re.search(rf"\b{re.escape(place)}\b", text):
-        return False
-    if "jalisco" not in text and any(re.search(rf"\b{re.escape(state)}\b", text) for state in OTHER_STATE_NAMES):
-        return False
-    return True
+    reasons: list[str] = []
+    score = 0
+    title_mentions_place = bool(re.search(rf"\b{re.escape(place)}\b", title_text))
+    summary_mentions_place = bool(re.search(rf"\b{re.escape(place)}\b", summary_text))
+    if title_mentions_place:
+        score += 50
+        reasons.append(f"Menciona {municipality} en el título")
+    elif summary_mentions_place:
+        score += 30
+        reasons.append(f"Menciona {municipality} en el resumen")
+    else:
+        return 0, "Baja", f"No menciona {municipality}"
+
+    if "jalisco" in text:
+        score += 20
+        reasons.append("Ubicación confirmada en Jalisco")
+    local_context = (
+        "municipio", "ayuntamiento", "cabildo", "colonia", "comunidad", "carretera",
+        "proteccion civil", "policia", "vecinos", "gobierno municipal", "region valles",
+        "delegacion", "centro historico", "servicios publicos",
+    )
+    if any(term in text for term in local_context):
+        score += 15
+        reasons.append("Tiene contexto municipal")
+    news_context = (
+        "accidente", "choque", "incendio", "detenido", "robo", "homicidio", "desaparecid",
+        "alerta", "cierre", "obra", "fuga", "agua", "evento", "festival", "torneo",
+        "empleo", "inversion", "escuela", "hospital", "turismo",
+    )
+    if any(term in text for term in news_context):
+        score += 10
+        reasons.append("Contiene un hecho noticioso")
+
+    other_states = [state for state in OTHER_STATE_NAMES if re.search(rf"\b{re.escape(state)}\b", text)]
+    if other_states and "jalisco" not in text:
+        return 0, "Baja", f"Corresponde a otro estado: {other_states[0].title()}"
+
+    # “Tequila” también puede referirse a la bebida. Sin contexto territorial,
+    # no se considera una noticia del municipio.
+    if place == "tequila" and "jalisco" not in text and not any(term in text for term in local_context):
+        score = min(score, 35)
+        reasons.append("Tequila aparece sin contexto geográfico")
+
+    score = max(0, min(score, 100))
+    level = "Alta" if score >= 80 else "Media" if score >= 55 else "Baja"
+    return score, level, " · ".join(reasons[:3])
+
+
+def radar_item_matches_coverage(title: str, summary: str, municipality: str) -> bool:
+    score, _, _ = local_relevance_analysis(title, summary, municipality)
+    return score >= 55
+
+
+def radar_duplicate_exists(db: sqlite3.Connection, title: str, url: str) -> bool:
+    candidates = db.execute(
+        """
+        SELECT title, url FROM radar_items
+        WHERE datetime(COALESCE(published_at, detected_at)) >= datetime('now', '-14 days')
+        UNION ALL
+        SELECT title, url FROM noticias
+        WHERE datetime(COALESCE(published_at, created_at)) >= datetime('now', '-14 days')
+        ORDER BY title LIMIT 800
+        """
+    ).fetchall()
+    normalized_url = url.strip()
+    for candidate in candidates:
+        if normalized_url and str(candidate["url"] or "").strip() == normalized_url:
+            return True
+        if news_titles_are_similar(title, str(candidate["title"] or "")):
+            return True
+    return False
 
 
 def classify_radar_content(title: str, summary: str, municipality: str) -> tuple[str, NewsPriority, list[str]]:
@@ -2096,7 +2191,8 @@ def prune_automatic_drafts(max_per_municipality: int = 20, days: int = 7) -> int
 def import_radar_item_record(db: sqlite3.Connection, item: sqlite3.Row, now: str, force: bool = False) -> int | None:
     if item["imported_news_id"] is not None or (not force and not radar_item_is_recent(item["published_at"], item["detected_at"])):
         return None
-    if not force and not radar_item_matches_coverage(item["title"], item["summary"], item["municipality"]):
+    score, _, _ = local_relevance_analysis(item["title"], item["summary"], item["municipality"])
+    if not force and score < 55:
         return None
     normalized_title = normalized_news_title(item["title"])
     candidates = db.execute(
@@ -2120,7 +2216,7 @@ def import_radar_item_record(db: sqlite3.Connection, item: sqlite3.Row, now: str
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Borrador', ?)
         """,
         (
-            item["title"], item["summary"], item["summary"], item["source_name"],
+            clean_feed_text(item["title"], 180), clean_feed_text(item["summary"], 800), item["summary"], item["source_name"],
             "Cobertura automática", item["municipality"], category, priority, "Pendiente",
             item["image_url"], item["url"], item["published_at"], now, 0,
             json.dumps(list(dict.fromkeys(["radar", "cobertura local", *tags])), ensure_ascii=False), now,
@@ -2139,13 +2235,15 @@ def row_to_radar_source(row: sqlite3.Row) -> RadarSource:
     return RadarSource(**data)
 
 
-def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
+def scan_radar_source(source: sqlite3.Row) -> tuple[int, int, int, int]:
     content = fetch_feed_bytes(source["url"])
     parsed = feedparser.parse(content)
     if not parsed.entries:
         raise ValueError("No se encontraron publicaciones en esta dirección RSS o Atom.")
     detected = 0
     imported = 0
+    filtered = 0
+    duplicates = 0
     open_graph_budget = 10
     image_validation_cache: dict[str, bool] = {}
 
@@ -2177,7 +2275,14 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
             raw_id = str(entry.get("id") or entry.get("guid") or link or f"{title}|{published_at or ''}")
             external_id = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()
             summary = clean_feed_text(entry.get("summary") or entry.get("description"), 2_000)
-            if bool(source["managed"]) and not radar_item_matches_coverage(title, summary, source["municipality"]):
+            relevance_score, relevance_level, relevance_reason = local_relevance_analysis(
+                title, summary, source["municipality"]
+            )
+            if bool(source["managed"]) and relevance_score < 55:
+                filtered += 1
+                continue
+            if radar_duplicate_exists(db, title, link):
+                duplicates += 1
                 continue
             existing = db.execute(
                 "SELECT id FROM radar_items WHERE source_id = ? AND external_id = ?",
@@ -2195,10 +2300,14 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
             cursor = db.execute(
                 """
                 INSERT OR IGNORE INTO radar_items (
-                    source_id, external_id, title, summary, image_url, url, published_at, detected_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    source_id, external_id, title, summary, image_url, url, published_at, detected_at,
+                    relevance_score, relevance_level, relevance_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (source["id"], external_id, title, summary, image_url, link, published_at, now),
+                (
+                    source["id"], external_id, clean_feed_text(title, 180), summary, image_url, link,
+                    published_at, now, relevance_score, relevance_level, relevance_reason,
+                ),
             )
             detected += max(cursor.rowcount, 0)
         if bool(source["auto_import"]):
@@ -2221,7 +2330,7 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int]:
             """,
             (now, now, source["id"]),
         )
-    return detected, imported
+    return detected, imported, filtered, duplicates
 
 
 class FacebookGraphError(ValueError):
@@ -2806,7 +2915,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.5.0",
+    version="1.14.0",
     description="API local para administrar noticias, revisión editorial, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
@@ -2825,7 +2934,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.5.0"}
+    return {"status": "ok", "version": "1.14.0"}
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -3400,12 +3509,16 @@ def scan_radar_sources(source_id: int | None = None) -> RadarScanResult:
         raise HTTPException(status_code=404, detail="La fuente no existe.")
     detected = 0
     imported = 0
+    filtered = 0
+    duplicates = 0
     errors: list[str] = []
     for source in rows:
         try:
-            source_detected, source_imported = scan_radar_source(source)
+            source_detected, source_imported, source_filtered, source_duplicates = scan_radar_source(source)
             detected += source_detected
             imported += source_imported
+            filtered += source_filtered
+            duplicates += source_duplicates
         except Exception as error:
             message = clean_feed_text(str(error), 300) or "No fue posible consultar la fuente."
             with connection() as db:
@@ -3425,7 +3538,10 @@ def scan_radar_sources(source_id: int | None = None) -> RadarScanResult:
                     (now, status_message, next_errors, int(disable_source), now, source["id"]),
                 )
             errors.append(f"{source['name']}: {status_message}")
-    return RadarScanResult(scanned_sources=len(rows), detected=detected, imported=imported, cleaned=cleaned, errors=errors)
+    return RadarScanResult(
+        scanned_sources=len(rows), detected=detected, imported=imported, cleaned=cleaned,
+        filtered=filtered, duplicates=duplicates, errors=errors,
+    )
 
 
 @app.post("/api/radar/escanear", response_model=RadarScanResult)
@@ -3448,7 +3564,7 @@ def list_radar_items(
             SELECT i.*, s.name AS source_name, s.municipality, s.category
             FROM radar_items i JOIN radar_sources s ON s.id = i.source_id
             {where}
-            ORDER BY COALESCE(i.published_at, i.detected_at) DESC, i.id DESC
+            ORDER BY i.relevance_score DESC, COALESCE(i.published_at, i.detected_at) DESC, i.id DESC
             LIMIT ? OFFSET ?
             """,
             (limit, offset),
