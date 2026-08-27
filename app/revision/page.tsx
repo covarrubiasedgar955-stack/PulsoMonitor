@@ -26,6 +26,39 @@ function isLocalImage(value: string) {
   return /^https?:\/\/(127\.0\.0\.1|localhost):8000\/api\/imagenes\//.test(value);
 }
 
+function publicationState(item: EditorialItem) {
+  if (item.status === "Programada" && item.facebook_post_id) {
+    return {
+      label: "Programada en Facebook",
+      tone: "scheduled",
+      locked: true,
+      detail: `La publicación está programada${item.scheduled_at ? ` para ${when(item.scheduled_at)}` : ""}. Cancela primero la programación para cambiar su fotografía.`,
+    };
+  }
+  if (item.facebook_post_id) {
+    return {
+      label: "Publicada en Facebook",
+      tone: "published",
+      locked: true,
+      detail: "Esta publicación ya existe en Facebook y se conserva como historial. Su fotografía no puede reemplazarse desde Pulso Monitor.",
+    };
+  }
+  if (/^Facebook\s*·/i.test(item.source)) {
+    return {
+      label: "Importada como fuente",
+      tone: "imported",
+      locked: false,
+      detail: "La publicación original se utilizó como fuente; esta noticia todavía puede editarse y publicarse desde Pulso Monitor.",
+    };
+  }
+  return {
+    label: "Pendiente de publicar",
+    tone: "pending",
+    locked: false,
+    detail: "Todavía no se ha publicado en Facebook y su fotografía puede modificarse.",
+  };
+}
+
 export default function EditorialReviewPage() {
   const [board, setBoard] = useState<EditorialBoard | null>(null);
   const [team, setTeam] = useState<UserInfo[]>([]);
@@ -105,6 +138,7 @@ export default function EditorialReviewPage() {
   const visibleItems = useMemo(() => board?.items || [], [board]);
   const allVisibleSelected = visibleItems.length > 0 && visibleItems.every((item) => selectedIds.includes(item.id));
   const totalPages = Math.max(1, Math.ceil((board?.total || 0) / (board?.page_size || 20)));
+  const selectedPublication = selected ? publicationState(selected) : null;
 
   function toggleSelected(id: number) {
     setSelectedIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
@@ -263,7 +297,7 @@ export default function EditorialReviewPage() {
               <article className={`editorial-card ${item.priority === "Urgente" ? "urgent-card" : ""} ${selected?.id === item.id ? "selected" : ""}`} key={item.id} onClick={() => setSelected(item)}>
                 <label className="editorial-card-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)} /><span>Seleccionar noticia</span></label>
                 <div className={`editorial-card-image ${item.image_url ? "has-image" : ""}`} style={imageStyle(item.image_url)}>{item.image_url ? "" : "Sin imagen"}</div>
-                <div className="editorial-card-top"><span className={stateClass(item.editorial_state)}>{item.editorial_state}</span><span className={`priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span>{item.priority === "Urgente" && <strong className="urgent-label">Atención prioritaria</strong>}</div>
+                <div className="editorial-card-top"><span className={stateClass(item.editorial_state)}>{item.editorial_state}</span><span className={`publication-state publication-${publicationState(item).tone}`}>{publicationState(item).label}</span><span className={`priority priority-${item.priority.toLowerCase()}`}>{item.priority}</span>{item.priority === "Urgente" && <strong className="urgent-label">Atención prioritaria</strong>}</div>
                 <h3>{item.title}</h3><p>{item.summary || item.content || "Sin resumen editorial."}</p>
                 <div className="editorial-source"><span>Fuente: <strong>{item.source || "Sin identificar"}</strong></span>{item.url && <a href={item.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Abrir original ↗</a>}</div>
                 <div className="editorial-meta"><span>{item.municipality}</span><span>{item.category}</span><span>{when(item.review_requested_at || item.updated_at)}</span></div>
@@ -283,19 +317,20 @@ export default function EditorialReviewPage() {
               {canReview && <div className="editorial-image-control">
                 <strong>Fotografía de la noticia</strong>
                 <p>Selecciona una foto desde tu computadora o pega una dirección directa. Pulso Monitor rechazará logotipos, íconos y banners.</p>
+                {selectedPublication && <div className={`publication-notice publication-${selectedPublication.tone}`}><strong>{selectedPublication.label}</strong><span>{selectedPublication.detail}</span>{selected.status === "Programada" && <Link className="button secondary" href="/publicaciones">Ir a Publicaciones para cancelar</Link>}</div>}
                 <label className="editorial-file-picker">
                   <span>{imageFile ? imageFile.name : "Elegir fotografía de la computadora"}</span>
-                  <input key={uploadInputKey} type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => chooseImage(event.target.files?.[0])} disabled={saving} />
+                  <input key={uploadInputKey} type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => chooseImage(event.target.files?.[0])} disabled={saving || selectedPublication?.locked} />
                 </label>
                 {imagePreview && <div className="editorial-upload-preview" style={imageStyle(imagePreview)}><span>Vista previa</span></div>}
-                <button className="button primary" disabled={saving || !imageFile} onClick={() => void uploadImage()}>{saving ? "Subiendo…" : "Subir fotografía"}</button>
+                <button className="button primary" disabled={saving || !imageFile || selectedPublication?.locked} onClick={() => void uploadImage()}>{saving ? "Subiendo…" : "Subir fotografía"}</button>
                 {imageError && <div className="alert error">{imageError}</div>}
                 {imageMessage && <div className="alert success">{imageMessage}</div>}
                 <span className="editorial-image-divider">o utiliza una dirección de Internet</span>
-                <input type="url" value={imageUrl} onChange={(event) => setImageUrl(event.target.value)} placeholder="https://sitio.com/fotografia.jpg" disabled={saving} />
-                <div className="editorial-image-url-actions"><button className="button primary" disabled={saving || !imageUrl.trim()} onClick={() => void updateImage(false)}>Validar y guardar</button><button className="button danger-outline" disabled={saving || !selected.image_url} onClick={() => void updateImage(true)}>Quitar imagen</button></div>
+                <input type="url" value={imageUrl} onChange={(event) => setImageUrl(event.target.value)} placeholder="https://sitio.com/fotografia.jpg" disabled={saving || selectedPublication?.locked} />
+                <div className="editorial-image-url-actions"><button className="button primary" disabled={saving || !imageUrl.trim() || selectedPublication?.locked} onClick={() => void updateImage(false)}>Validar y guardar</button><button className="button danger-outline" disabled={saving || !selected.image_url || selectedPublication?.locked} onClick={() => void updateImage(true)}>Quitar imagen</button></div>
               </div>}
-              <div className="detail-status"><span className={stateClass(selected.editorial_state)}>{selected.editorial_state}</span><span className={`priority priority-${selected.priority.toLowerCase()}`}>{selected.priority}</span></div>
+              <div className="detail-status"><span className={stateClass(selected.editorial_state)}>{selected.editorial_state}</span>{selectedPublication && <span className={`publication-state publication-${selectedPublication.tone}`}>{selectedPublication.label}</span>}<span className={`priority priority-${selected.priority.toLowerCase()}`}>{selected.priority}</span></div>
               <p>{selected.summary || "Esta noticia todavía no tiene resumen."}</p>
               <dl><div><dt>Responsable</dt><dd>{selected.assigned_name}</dd></div><div><dt>Municipio</dt><dd>{selected.municipality}</dd></div><div><dt>Categoría</dt><dd>{selected.category}</dd></div><div><dt>Último cambio</dt><dd>{when(selected.updated_at)}</dd></div></dl>
               <div className="editorial-source-detail"><div><span>Fuente original</span><strong>{selected.source || "Sin identificar"}</strong></div>{selected.url ? <a className="button secondary" href={selected.url} target="_blank" rel="noreferrer">Abrir publicación original ↗</a> : <small>Esta noticia no incluye un enlace de origen.</small>}</div>
