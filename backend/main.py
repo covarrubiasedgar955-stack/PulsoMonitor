@@ -2464,11 +2464,26 @@ def facebook_graph_delete(path: str, token: str) -> dict:
     return data
 
 
+def comparable_facebook_copy(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", folded(value)).strip()
+
+
+def clean_facebook_body(title: str, value: str) -> str:
+    paragraphs = [
+        re.sub(r"[ \t]+", " ", paragraph).strip()
+        for paragraph in re.split(r"\r?\n+", value or "")
+    ]
+    paragraphs = [paragraph for paragraph in paragraphs if paragraph]
+    if paragraphs and comparable_facebook_copy(paragraphs[0]) == comparable_facebook_copy(title):
+        paragraphs.pop(0)
+    return "\n\n".join(paragraphs)
+
+
 def facebook_message_for_news(row: sqlite3.Row) -> str:
-    title = str(row["title"] or "").strip()
-    body = str(row["content"] or row["summary"] or "").strip()
+    title = re.sub(r"\s+", " ", str(row["title"] or "")).strip()
+    body = clean_facebook_body(title, str(row["content"] or row["summary"] or ""))
     parts = [title]
-    if body and not body.casefold().startswith(title.casefold()):
+    if body:
         parts.append(body)
     try:
         raw_tags = json.loads(row["tags"] or "[]")
@@ -3030,7 +3045,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.18.0",
+    version="1.18.1",
     description="API local para administrar noticias, revisión editorial, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
@@ -3049,7 +3064,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.18.0"}
+    return {"status": "ok", "version": "1.18.1"}
 
 
 @app.get("/api/imagenes/{filename}")
