@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import type { FacebookStatus, NewsItem } from "@/types/news";
 
@@ -43,11 +43,13 @@ function statusClass(value: string) {
 function PublishModal({
   item,
   mode,
+  pageName,
   onClose,
   onCompleted,
 }: {
   item: NewsItem;
   mode: PublishMode;
+  pageName: string;
   onClose: () => void;
   onCompleted: (message: string) => void;
 }) {
@@ -55,14 +57,21 @@ function PublishModal({
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [imageUnavailable, setImageUnavailable] = useState(false);
   const [limits] = useState(() => ({
     minimum: localInputValue(new Date(Date.now() + 11 * 60_000)),
     maximum: localInputValue(new Date(Date.now() + 75 * 24 * 60 * 60_000)),
   }));
+  const message = useMemo(() => previewMessage(item), [item]);
+  const localImage = /^https?:\/\/(127\.0\.0\.1|localhost):8000\/api\/imagenes\//.test(item.image_url);
+  const hasImage = Boolean(item.image_url) && !imageUnavailable;
+  const missingLocalImage = localImage && imageUnavailable;
+
+  useEffect(() => { setImageUnavailable(false); }, [item.id, item.image_url]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!confirmed) return;
+    if (!confirmed || missingLocalImage) return;
     setSubmitting(true);
     setError("");
     try {
@@ -87,18 +96,25 @@ function PublishModal({
           <button className="icon-button" onClick={onClose} aria-label="Cerrar">×</button>
         </div>
         <form onSubmit={submit}>
-          <div className="publication-destination"><span>f</span><div><strong>Página de Facebook conectada</strong><small>La publicación aparecerá públicamente con la identidad de la página.</small></div></div>
-          <label className="publish-preview-label">Vista previa</label>
-          <pre className="publish-preview">{previewMessage(item)}</pre>
+          <div className="publication-destination"><span>f</span><div><strong>{pageName || "Página de Facebook conectada"}</strong><small>La publicación aparecerá públicamente con la identidad de esta página.</small></div></div>
+          <div className="publish-preview-heading"><label className="publish-preview-label">Vista previa final</label><span>{message.length.toLocaleString("es-MX")} caracteres</span></div>
+          <article className="facebook-preview-card">
+            <header><span className="facebook-preview-avatar">f</span><div><strong>{pageName || "Pulso Tequila"}</strong><small>{mode === "schedule" ? "Publicación programada" : "Publicación inmediata"} · 🌐</small></div></header>
+            <pre className="publish-preview">{message}</pre>
+            {hasImage && <img src={item.image_url} alt={`Fotografía que acompañará: ${item.title}`} onError={() => setImageUnavailable(true)} />}
+            {!hasImage && <div className="facebook-preview-no-image"><strong>Se publicará sin fotografía</strong><span>Facebook mostrará el texto y, cuando exista, el enlace de la fuente original.</span></div>}
+          </article>
+          {missingLocalImage && <div className="alert error">La fotografía guardada ya no está disponible en esta computadora. Regresa a Revisión editorial y carga nuevamente el archivo antes de publicar.</div>}
+          {!item.image_url && <div className="alert warning">Esta noticia no tiene fotografía. Puedes continuar y publicarla únicamente con texto.</div>}
           {mode === "schedule" && (
             <label className="schedule-field">Fecha y hora de publicación
               <input type="datetime-local" required min={limits.minimum} max={limits.maximum} value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} />
               <small>Meta permite programar entre 10 minutos y 75 días.</small>
             </label>
           )}
-          <label className="publish-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>Confirmo que revisé el título, contenido y etiquetas, y autorizo enviarlos a Facebook.</span></label>
+          <label className="publish-confirm"><input type="checkbox" disabled={missingLocalImage} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>Confirmo que revisé la fotografía, el título, el contenido y las etiquetas, y autorizo enviarlos a Facebook.</span></label>
           {error && <div className="alert error">{error}</div>}
-          <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Volver</button><button className="button facebook-button" disabled={!confirmed || submitting}>{submitting ? "Enviando a Meta…" : mode === "schedule" ? "Confirmar programación" : "Publicar ahora"}</button></div>
+          <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Volver</button><button className="button facebook-button" disabled={!confirmed || submitting || missingLocalImage}>{submitting ? "Enviando a Meta…" : mode === "schedule" ? "Confirmar programación" : "Publicar ahora"}</button></div>
         </form>
       </section>
     </div>
@@ -202,7 +218,7 @@ export default function PublicationsPage() {
           {!loading && visible.length === 0 && <div className="radar-empty small"><div>✓</div><strong>No hay contenido en esta sección</strong><span>Las noticias aparecerán aquí conforme avance el flujo editorial.</span></div>}
         </div>
       </section>
-      {selected && <PublishModal item={selected.item} mode={selected.mode} onClose={() => setSelected(null)} onCompleted={completed} />}
+      {selected && <PublishModal item={selected.item} mode={selected.mode} pageName={facebook?.page_name || "Pulso Tequila"} onClose={() => setSelected(null)} onCompleted={completed} />}
     </main>
   );
 }

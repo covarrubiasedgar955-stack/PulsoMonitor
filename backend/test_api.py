@@ -48,7 +48,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.17.0")
+        self.assertEqual(health.json()["version"], "1.18.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -1109,6 +1109,20 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(photo_mock.call_args.args[2]["url"], image_payload["image_url"])
         self.assertIn("Noticia aprobada con fotografía", photo_mock.call_args.args[2]["caption"])
         self.assertNotIn("message", photo_mock.call_args.args[2])
+
+        missing_image_payload = {
+            **payload,
+            "title": "Noticia con fotografía local faltante",
+            "image_url": "http://127.0.0.1:8000/api/imagenes/noticia-999-0123456789abcdef.jpg",
+        }
+        missing_image_news = self.client.post("/api/noticias", headers=self.headers, json=missing_image_payload).json()
+        self.client.put(f"/api/noticias/{missing_image_news['id']}/flujo-editorial", headers=self.headers, json={"action": "request_review", "assigned_to": None, "note": ""})
+        self.client.put(f"/api/noticias/{missing_image_news['id']}/flujo-editorial", headers=self.headers, json={"action": "approve", "assigned_to": None, "note": ""})
+        missing_image = self.client.post(
+            f"/api/noticias/{missing_image_news['id']}/publicar-facebook", headers=self.headers, json={"scheduled_at": None},
+        )
+        self.assertEqual(missing_image.status_code, 409)
+        self.assertIn("ya no está disponible", missing_image.json()["detail"])
 
         scheduled_news = self.client.post("/api/noticias", headers=self.headers, json=payload).json()
         self.client.put(f"/api/noticias/{scheduled_news['id']}/flujo-editorial", headers=self.headers, json={"action": "request_review", "assigned_to": None, "note": ""})
