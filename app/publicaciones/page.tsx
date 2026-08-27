@@ -24,14 +24,29 @@ function initialSchedule() {
   return localInputValue(date);
 }
 
+function comparableCopy(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function cleanFacebookBody(title: string, value: string) {
+  const paragraphs = value
+    .replace(/\r\n?/g, "\n")
+    .split(/\n+/)
+    .map((paragraph) => paragraph.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean);
+  if (paragraphs.length && comparableCopy(paragraphs[0]) === comparableCopy(title)) paragraphs.shift();
+  return paragraphs.join("\n\n");
+}
+
 function previewMessage(item: NewsItem) {
-  const body = (item.content || item.summary).trim();
+  const title = item.title.replace(/\s+/g, " ").trim();
+  const body = cleanFacebookBody(title, item.content || item.summary);
   const tags = ["PulsoTequila", ...item.tags]
     .map((tag) => tag.replace(/[^a-zA-Z0-9áéíóúüñÁÉÍÓÚÜÑ_]/g, ""))
     .filter(Boolean)
     .filter((tag, index, values) => values.findIndex((value) => value.toLowerCase() === tag.toLowerCase()) === index)
     .slice(0, 5);
-  return [item.title, body.toLowerCase().startsWith(item.title.toLowerCase()) ? "" : body, tags.map((tag) => `#${tag}`).join(" ")]
+  return [title, body, tags.map((tag) => `#${tag}`).join(" ")]
     .filter(Boolean)
     .join("\n\n");
 }

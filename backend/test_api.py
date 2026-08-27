@@ -48,7 +48,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.18.0")
+        self.assertEqual(health.json()["version"], "1.18.1")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -1148,6 +1148,18 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(cancelled.status_code, 200)
         self.assertEqual(cancelled.json()["status"], "Pendiente")
         self.assertEqual(cancelled.json()["facebook_post_id"], "")
+
+    def test_facebook_copy_removes_title_repeated_with_different_punctuation(self):
+        title = 'Gobierno de Teuchitlán atiende a familias tras desbordamiento de “El Tajo” - Tala Jalisco Noticias'
+        message = main.facebook_message_for_news({
+            "title": title,
+            "content": 'Gobierno de Teuchitlán atiende a familias tras desbordamiento de “El Tajo” Tala Jalisco Noticias\n\nInformación adicional de la noticia.',
+            "summary": "",
+            "tags": json.dumps(["tala", "Tala", "gobierno"], ensure_ascii=False),
+        })
+        self.assertEqual(message.count("Gobierno de Teuchitlán atiende"), 1)
+        self.assertIn("Información adicional de la noticia.", message)
+        self.assertEqual(message.casefold().count("#tala"), 1)
 
     def test_local_ai_analysis(self):
         result = self.client.post(
