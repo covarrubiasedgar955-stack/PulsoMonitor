@@ -2729,18 +2729,25 @@ def validate_editorial_image(image_url: str) -> str:
     return accepted
 
 
-def local_editorial_image_path(image_url: str) -> Path | None:
-    """Resolve only image URLs created by Pulso Monitor inside its upload directory."""
+def is_local_editorial_image_url(image_url: str) -> bool:
+    """Identify URLs reserved for photographs stored by this Pulso Monitor installation."""
     try:
         parsed = urlparse(unescape(str(image_url or "")).strip())
     except ValueError:
-        return None
+        return False
     prefix = "/api/imagenes/"
     if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"127.0.0.1", "localhost"} or not parsed.path.startswith(prefix):
-        return None
+        return False
     filename = Path(parsed.path.removeprefix(prefix)).name
-    if not re.fullmatch(r"noticia-\d+-[a-f0-9]{16}\.jpg", filename):
+    return bool(re.fullmatch(r"noticia-\d+-[a-f0-9]{16}\.jpg", filename))
+
+
+def local_editorial_image_path(image_url: str) -> Path | None:
+    """Resolve an existing image created inside the local upload directory."""
+    if not is_local_editorial_image_url(image_url):
         return None
+    parsed = urlparse(unescape(str(image_url or "")).strip())
+    filename = Path(parsed.path.removeprefix("/api/imagenes/")).name
     candidate = EDITORIAL_UPLOAD_DIR / filename
     return candidate if candidate.is_file() else None
 
@@ -3023,7 +3030,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.17.0",
+    version="1.18.0",
     description="API local para administrar noticias, revisión editorial, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
@@ -3042,7 +3049,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.17.0"}
+    return {"status": "ok", "version": "1.18.0"}
 
 
 @app.get("/api/imagenes/{filename}")
@@ -4836,6 +4843,11 @@ def publish_news_to_facebook(
     now_dt = datetime.now(timezone.utc)
     raw_image_url = unescape(str(row["image_url"] or "")).strip()
     local_image_path = local_editorial_image_path(raw_image_url)
+    if is_local_editorial_image_url(raw_image_url) and local_image_path is None:
+        raise HTTPException(
+            status_code=409,
+            detail="La fotografía local ya no está disponible. Cárgala nuevamente desde Revisión editorial antes de publicar.",
+        )
     try:
         parsed_image_url = urlparse(raw_image_url)
         has_publishable_image = bool(
