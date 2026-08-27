@@ -3023,7 +3023,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.16.0",
+    version="1.16.1",
     description="API local para administrar noticias, revisión editorial, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
@@ -3042,7 +3042,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.16.0"}
+    return {"status": "ok", "version": "1.16.1"}
 
 
 @app.get("/api/imagenes/{filename}")
@@ -4410,7 +4410,10 @@ def update_editorial_image(
         current = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
         if current is None:
             raise HTTPException(status_code=404, detail="La noticia no existe.")
-        if current["status"] in ("Programada", "Publicada") or current["facebook_post_id"]:
+        # A legacy/imported record may carry status="Publicada" without ever
+        # having been published by Pulso Monitor. Only lock the image when a
+        # Meta publication really exists or is currently scheduled.
+        if current["status"] == "Programada" or current["facebook_post_id"]:
             raise HTTPException(status_code=409, detail="La imagen ya no puede cambiarse después de programar o publicar.")
 
         image_url = validate_editorial_image(payload.image_url) if payload.image_url else ""
@@ -4447,7 +4450,7 @@ async def upload_editorial_image(
         current = db.execute("SELECT * FROM noticias WHERE id = ?", (news_id,)).fetchone()
     if current is None:
         raise HTTPException(status_code=404, detail="La noticia no existe.")
-    if current["status"] in ("Programada", "Publicada") or current["facebook_post_id"]:
+    if current["status"] == "Programada" or current["facebook_post_id"]:
         raise HTTPException(status_code=409, detail="La imagen ya no puede cambiarse después de programar o publicar.")
 
     image_url = save_editorial_upload(news_id, await image.read(8 * 1024 * 1024 + 1))

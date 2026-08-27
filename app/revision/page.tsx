@@ -53,6 +53,8 @@ export default function EditorialReviewPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [imageError, setImageError] = useState("");
+  const [imageMessage, setImageMessage] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -88,6 +90,8 @@ export default function EditorialReviewPage() {
     setImageFile(null);
     setImagePreview("");
     setUploadInputKey((value) => value + 1);
+    setImageError("");
+    setImageMessage("");
   }, [selected?.id, selected?.image_url]);
 
   useEffect(() => {
@@ -142,29 +146,32 @@ export default function EditorialReviewPage() {
     const nextImage = remove ? "" : imageUrl.trim();
     if (!remove && !nextImage) {
       setError("Pega primero la dirección de una fotografía.");
+      setImageError("Pega primero la dirección de una fotografía.");
       return;
     }
-    setSaving(true); setError(""); setMessage("");
+    setSaving(true); setError(""); setMessage(""); setImageError(""); setImageMessage("");
     try {
       const updated = await api.updateEditorialImage(selected.id, nextImage);
       setSelected(updated);
       setImageUrl(updated.image_url);
       setMessage(remove ? "La imagen fue retirada. La noticia se publicará sin fotografía." : "Fotografía validada y actualizada.");
+      setImageMessage(remove ? "La imagen fue retirada." : "Fotografía validada y actualizada.");
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "No se pudo actualizar la imagen.");
+      const detail = caught instanceof Error ? caught.message : "No se pudo actualizar la imagen.";
+      setError(detail); setImageError(detail);
     } finally { setSaving(false); }
   }
 
   function chooseImage(file: File | undefined) {
-    setError(""); setMessage("");
+    setError(""); setMessage(""); setImageError(""); setImageMessage("");
     if (!file) { setImageFile(null); return; }
     if (!(["image/jpeg", "image/png", "image/webp"].includes(file.type))) {
-      setError("Selecciona una fotografía JPEG, PNG o WebP.");
+      setError("Selecciona una fotografía JPEG, PNG o WebP."); setImageError("Selecciona una fotografía JPEG, PNG o WebP.");
       setImageFile(null); return;
     }
     if (file.size > 8 * 1024 * 1024) {
-      setError("La fotografía debe pesar menos de 8 MB.");
+      setError("La fotografía debe pesar menos de 8 MB."); setImageError("La fotografía debe pesar menos de 8 MB.");
       setImageFile(null); return;
     }
     setImageFile(file);
@@ -172,16 +179,18 @@ export default function EditorialReviewPage() {
 
   async function uploadImage() {
     if (!selected || !imageFile) return;
-    setSaving(true); setError(""); setMessage("");
+    setSaving(true); setError(""); setMessage(""); setImageError(""); setImageMessage("");
     try {
       const updated = await api.uploadEditorialImage(selected.id, imageFile);
       setSelected(updated);
       setImageUrl("");
       setImageFile(null);
       setMessage("La fotografía se subió y quedó lista para publicar en Facebook.");
+      setImageMessage("La fotografía se subió y quedó lista para publicar en Facebook.");
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "No se pudo subir la fotografía.");
+      const detail = caught instanceof Error ? caught.message : "No se pudo subir la fotografía.";
+      setError(detail); setImageError(detail);
     } finally { setSaving(false); }
   }
 
@@ -280,6 +289,8 @@ export default function EditorialReviewPage() {
                 </label>
                 {imagePreview && <div className="editorial-upload-preview" style={imageStyle(imagePreview)}><span>Vista previa</span></div>}
                 <button className="button primary" disabled={saving || !imageFile} onClick={() => void uploadImage()}>{saving ? "Subiendo…" : "Subir fotografía"}</button>
+                {imageError && <div className="alert error">{imageError}</div>}
+                {imageMessage && <div className="alert success">{imageMessage}</div>}
                 <span className="editorial-image-divider">o utiliza una dirección de Internet</span>
                 <input type="url" value={imageUrl} onChange={(event) => setImageUrl(event.target.value)} placeholder="https://sitio.com/fotografia.jpg" disabled={saving} />
                 <div className="editorial-image-url-actions"><button className="button primary" disabled={saving || !imageUrl.trim()} onClick={() => void updateImage(false)}>Validar y guardar</button><button className="button danger-outline" disabled={saving || !selected.image_url} onClick={() => void updateImage(true)}>Quitar imagen</button></div>

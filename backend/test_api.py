@@ -48,7 +48,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.16.0")
+        self.assertEqual(health.json()["version"], "1.16.1")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -674,6 +674,37 @@ class PulsoMonitorApiTests(unittest.TestCase):
         self.assertEqual(removed.status_code, 200)
         self.assertEqual(removed.json()["image_url"], "")
         self.assertEqual(self.client.get(urlparse(image_url).path).status_code, 404)
+
+    def test_legacy_published_news_without_meta_post_can_replace_photo(self):
+        created = self.client.post("/api/noticias", headers=self.headers, json={
+            "title": "Nota aprobada con estado heredado", "summary": "Resumen", "content": "Contenido",
+            "source": "Manual", "author": "Pulso", "municipality": "Tala", "category": "Seguridad",
+            "priority": "Urgente", "status": "Pendiente", "image_url": "", "url": "",
+            "published_at": None, "is_ai": False, "tags": [],
+        })
+        news_id = created.json()["id"]
+        with main.connection() as db:
+            db.execute(
+                "UPDATE noticias SET status = 'Publicada', editorial_state = 'Aprobada', facebook_post_id = '' WHERE id = ?",
+                (news_id,),
+            )
+
+        photo = Image.new("RGB", (900, 520), "navy")
+        photo_bytes = io.BytesIO()
+        photo.save(photo_bytes, format="PNG")
+        with patch.object(main, "image_bytes_look_like_logo", return_value=False):
+            uploaded = self.client.post(
+                f"/api/noticias/{news_id}/imagen/archivo", headers=self.headers,
+                files={"image": ("fotografia.png", photo_bytes.getvalue(), "image/png")},
+            )
+        self.assertEqual(uploaded.status_code, 200)
+
+        with main.connection() as db:
+            db.execute("UPDATE noticias SET facebook_post_id = 'meta-post-123' WHERE id = ?", (news_id,))
+        blocked = self.client.put(
+            f"/api/noticias/{news_id}/imagen", headers=self.headers, json={"image_url": ""},
+        )
+        self.assertEqual(blocked.status_code, 409)
 
     def test_image_backfill_discards_repeated_cover_without_replacement(self):
         ids = []
