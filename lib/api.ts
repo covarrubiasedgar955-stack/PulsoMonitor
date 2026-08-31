@@ -379,10 +379,10 @@ export const api = {
     });
   },
 
-  publishNewsToFacebook(id: number, scheduledAt: string | null = null) {
+  publishNewsToFacebook(id: number, scheduledAt: string | null = null, message: string | null = null) {
     return request<FacebookPublishResult>(`/api/noticias/${id}/publicar-facebook`, {
       method: "POST",
-      body: JSON.stringify({ scheduled_at: scheduledAt }),
+      body: JSON.stringify({ scheduled_at: scheduledAt, message }),
     });
   },
 

@@ -73,25 +73,32 @@ function PublishModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [imageUnavailable, setImageUnavailable] = useState(false);
+  const [editingCopy, setEditingCopy] = useState(false);
   const [limits] = useState(() => ({
     minimum: localInputValue(new Date(Date.now() + 11 * 60_000)),
     maximum: localInputValue(new Date(Date.now() + 75 * 24 * 60 * 60_000)),
   }));
-  const message = useMemo(() => previewMessage(item), [item]);
+  const automaticMessage = useMemo(() => previewMessage(item), [item]);
+  const [message, setMessage] = useState(automaticMessage);
   const localImage = /^https?:\/\/(127\.0\.0\.1|localhost):8000\/api\/imagenes\//.test(item.image_url);
   const hasImage = Boolean(item.image_url) && !imageUnavailable;
   const missingLocalImage = localImage && imageUnavailable;
 
-  useEffect(() => { setImageUnavailable(false); }, [item.id, item.image_url]);
+  useEffect(() => {
+    setImageUnavailable(false);
+    setEditingCopy(false);
+    setMessage(automaticMessage);
+  }, [automaticMessage, item.id, item.image_url]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!confirmed || missingLocalImage) return;
+    if (!confirmed || missingLocalImage || message.trim().length < 3) return;
     setSubmitting(true);
     setError("");
     try {
       const isoDate = mode === "schedule" ? new Date(scheduledAt).toISOString() : null;
-      const result = await api.publishNewsToFacebook(item.id, isoDate);
+      const finalCopy = message.trim() === automaticMessage ? null : message.trim();
+      const result = await api.publishNewsToFacebook(item.id, isoDate, finalCopy);
       onCompleted(result.scheduled
         ? `La noticia quedó programada para ${dateTime(result.news.scheduled_at)}.`
         : "La noticia se publicó correctamente en Facebook.");
@@ -112,7 +119,8 @@ function PublishModal({
         </div>
         <form onSubmit={submit}>
           <div className="publication-destination"><span>f</span><div><strong>{pageName || "Página de Facebook conectada"}</strong><small>La publicación aparecerá públicamente con la identidad de esta página.</small></div></div>
-          <div className="publish-preview-heading"><label className="publish-preview-label">Vista previa final</label><span>{message.length.toLocaleString("es-MX")} caracteres</span></div>
+          <div className="publish-preview-heading"><label className="publish-preview-label">Vista previa final</label><div><button type="button" onClick={() => setEditingCopy((value) => !value)}>{editingCopy ? "Cerrar edición" : "Editar texto"}</button><button type="button" disabled={message === automaticMessage} onClick={() => { setMessage(automaticMessage); setConfirmed(false); }}>Restaurar automático</button><span>{message.length.toLocaleString("es-MX")} caracteres</span></div></div>
+          {editingCopy && <label className="final-copy-editor">Texto que recibirá Facebook<textarea value={message} maxLength={60_000} rows={9} onChange={(event) => { setMessage(event.target.value); setConfirmed(false); }} /><small>La edición solo se aplicará a esta publicación; la noticia original permanecerá intacta.</small></label>}
           <article className="facebook-preview-card">
             <header><span className="facebook-preview-avatar">f</span><div><strong>{pageName || "Pulso Tequila"}</strong><small>{mode === "schedule" ? "Publicación programada" : "Publicación inmediata"} · 🌐</small></div></header>
             <pre className="publish-preview">{message}</pre>
@@ -121,15 +129,16 @@ function PublishModal({
           </article>
           {missingLocalImage && <div className="alert error">La fotografía guardada ya no está disponible en esta computadora. Regresa a Revisión editorial y carga nuevamente el archivo antes de publicar.</div>}
           {!item.image_url && <div className="alert warning">Esta noticia no tiene fotografía. Puedes continuar y publicarla únicamente con texto.</div>}
+          {message.trim().length < 3 && <div className="alert error">El texto final debe contener al menos 3 caracteres.</div>}
           {mode === "schedule" && (
             <label className="schedule-field">Fecha y hora de publicación
               <input type="datetime-local" required min={limits.minimum} max={limits.maximum} value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} />
               <small>Meta permite programar entre 10 minutos y 75 días.</small>
             </label>
           )}
-          <label className="publish-confirm"><input type="checkbox" disabled={missingLocalImage} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>Confirmo que revisé la fotografía, el título, el contenido y las etiquetas, y autorizo enviarlos a Facebook.</span></label>
+          <label className="publish-confirm"><input type="checkbox" disabled={missingLocalImage || message.trim().length < 3} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>Confirmo que revisé la fotografía, el título, el contenido y las etiquetas, y autorizo enviarlos a Facebook.</span></label>
           {error && <div className="alert error">{error}</div>}
-          <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Volver</button><button className="button facebook-button" disabled={!confirmed || submitting || missingLocalImage}>{submitting ? "Enviando a Meta…" : mode === "schedule" ? "Confirmar programación" : "Publicar ahora"}</button></div>
+          <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Volver</button><button className="button facebook-button" disabled={!confirmed || submitting || missingLocalImage || message.trim().length < 3}>{submitting ? "Enviando a Meta…" : mode === "schedule" ? "Confirmar programación" : "Publicar ahora"}</button></div>
         </form>
       </section>
     </div>
