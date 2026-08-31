@@ -159,12 +159,12 @@ export default function RadarPage() {
 
   const classified = useMemo(() => items.map((item) => ({ item, editorial: editorialDecision(item) })), [items]);
   const counts = useMemo(() => ({
-    Prioritaria: classified.filter(({ item, editorial }) => !item.imported_news_id && editorial.decision === "Prioritaria").length,
-    Revisar: classified.filter(({ item, editorial }) => !item.imported_news_id && editorial.decision === "Revisar").length,
-    Descartar: classified.filter(({ item, editorial }) => !item.imported_news_id && editorial.decision === "Descartar").length,
+    Prioritaria: classified.filter(({ editorial }) => editorial.decision === "Prioritaria").length,
+    Revisar: classified.filter(({ editorial }) => editorial.decision === "Revisar").length,
+    Descartar: classified.filter(({ editorial }) => editorial.decision === "Descartar").length,
   }), [classified]);
   const visibleItems = useMemo(() => classified
-    .filter(({ item, editorial }) => filter === "Todas" ? true : !item.imported_news_id && editorial.decision === filter)
+    .filter(({ editorial }) => filter === "Todas" || editorial.decision === filter)
     .sort((a, b) => b.editorial.score - a.editorial.score || b.item.id - a.item.id), [classified, filter]);
 
   async function scan(sourceId?: number) {
