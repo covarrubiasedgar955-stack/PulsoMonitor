@@ -1,35 +1,101 @@
 @echo off
+setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
-title Iniciar Pulso Monitor
+title Pulso Monitor v1.20.0
 cd /d "%~dp0"
 
+set "PULSO_ROOT=%~dp0"
+set "BACKEND_PY=%PULSO_ROOT%backend\.venv\Scripts\python.exe"
+set "FRONTEND_PORT=3000"
+set "BACKEND_PORT=8000"
+
+echo.
+echo ========================================
+echo   PULSO MONITOR v1.20.0
+echo ========================================
+echo.
+
+where node >nul 2>nul || goto :missing_node
+where npm.cmd >nul 2>nul || goto :missing_node
+where python >nul 2>nul || goto :missing_python
+
 if not exist "node_modules" (
-  echo Pulso Monitor aun no esta instalado.
-  echo Ejecutando instalacion...
-  call instalar.bat
+  echo [1/4] Instalando dependencias del panel...
+  call npm.cmd install
+  if errorlevel 1 goto :install_error
+) else (
+  echo [1/4] Panel web listo.
 )
 
-if not exist "backend\.venv\Scripts\python.exe" (
-  echo Falta instalar el backend. Ejecuta instalar.bat.
-  pause
-  exit /b 1
+if not exist "%BACKEND_PY%" (
+  echo [2/4] Creando entorno de Python...
+  python -m venv backend\.venv
+  if errorlevel 1 goto :install_error
+) else (
+  echo [2/4] Entorno de Python listo.
+)
+
+echo [3/4] Verificando dependencias del backend...
+"%BACKEND_PY%" -c "import fastapi, uvicorn, multipart" >nul 2>nul
+if errorlevel 1 (
+  echo Instalando dependencias faltantes...
+  "%BACKEND_PY%" -m pip install -r backend\requirements.txt
+  if errorlevel 1 goto :install_error
 )
 
 if not exist "backend\.env" (
-  echo Falta generar el acceso seguro. Ejecutando instalacion...
-  call instalar.bat
+  echo Generando configuracion segura inicial...
+  "%BACKEND_PY%" backend\generate_config.py
+  if errorlevel 1 goto :install_error
 )
 
-set "PULSO_ROOT=%~dp0"
+echo [4/4] Preparando servicios...
 
-rem Cierra procesos anteriores de Pulso Monitor que hayan quedado abiertos.
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":3010" ^| findstr "LISTENING"') do taskkill /F /PID %%P >nul 2>nul
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8000" ^| findstr "LISTENING"') do taskkill /F /PID %%P >nul 2>nul
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":%BACKEND_PORT%" ^| findstr "LISTENING"') do set "BACKEND_PID=%%P"
+if defined BACKEND_PID (
+  echo El puerto %BACKEND_PORT% ya esta ocupado. Se reutilizara el backend existente.
+) else (
+  start "Pulso Monitor - API" cmd /k "cd /d ""%PULSO_ROOT%backend"" && ""%BACKEND_PY%"" -m uvicorn main:app --host 127.0.0.1 --port %BACKEND_PORT% --reload"
+)
 
-start "Pulso Monitor - API" cmd /k "cd /d ""%PULSO_ROOT%backend"" && .venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload"
-start "Pulso Monitor - Panel" cmd /k "cd /d ""%PULSO_ROOT%"" && npm run dev -- --hostname 127.0.0.1 --port 3010"
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":3000" ^| findstr "LISTENING"') do set "FRONTEND_PID=%%P"
+if defined FRONTEND_PID (
+  echo El puerto 3000 ya esta ocupado. Probando el 3001...
+  set "FRONTEND_PORT=3001"
+  for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":3001" ^| findstr "LISTENING"') do set "FRONTEND2_PID=%%P"
+  if defined FRONTEND2_PID (
+    echo ERROR: Los puertos 3000 y 3001 estan ocupados.
+    echo Cierra la aplicacion que los usa y vuelve a abrir iniciar.bat.
+    pause
+    exit /b 1
+  )
+)
 
-echo Iniciando Pulso Monitor...
+start "Pulso Monitor - Panel" cmd /k "cd /d ""%PULSO_ROOT%"" && npm.cmd run dev -- --hostname 127.0.0.1 --port !FRONTEND_PORT!"
+
+echo.
+echo Esperando a que Pulso Monitor termine de iniciar...
 timeout /t 5 /nobreak >nul
-start "" http://127.0.0.1:3010
-exit
+start "" "http://127.0.0.1:!FRONTEND_PORT!"
+
+echo Pulso Monitor esta iniciando en http://127.0.0.1:!FRONTEND_PORT!
+timeout /t 2 /nobreak >nul
+exit /b 0
+
+:missing_node
+echo ERROR: Node.js o npm no esta instalado.
+echo Instala Node.js y vuelve a ejecutar iniciar.bat.
+pause
+exit /b 1
+
+:missing_python
+echo ERROR: Python no esta instalado o no esta en PATH.
+pause
+exit /b 1
+
+:install_error
+echo.
+echo ERROR: No fue posible preparar Pulso Monitor.
+echo Revisa el mensaje anterior y vuelve a intentarlo.
+pause
+exit /b 1
