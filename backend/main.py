@@ -1087,6 +1087,7 @@ class FacebookPrepareResult(BaseModel):
 
 class FacebookPublishRequest(BaseModel):
     scheduled_at: datetime | None = None
+    message: str | None = Field(default=None, max_length=60_000)
 
     @field_validator("scheduled_at")
     @classmethod
@@ -1094,6 +1095,16 @@ class FacebookPublishRequest(BaseModel):
         if value is not None and value.tzinfo is None:
             raise ValueError("La fecha programada debe incluir zona horaria.")
         return value
+
+    @field_validator("message")
+    @classmethod
+    def final_message_is_usable(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if len(cleaned) < 3:
+            raise ValueError("El texto final debe contener al menos 3 caracteres.")
+        return cleaned
 
 
 class FacebookPublishResult(BaseModel):
@@ -3045,7 +3056,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.18.1",
+    version="1.19.0",
     description="API local para administrar noticias, revisión editorial, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
@@ -3064,7 +3075,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.18.1"}
+    return {"status": "ok", "version": "1.19.0"}
 
 
 @app.get("/api/imagenes/{filename}")
@@ -4851,7 +4862,9 @@ def publish_news_to_facebook(
     if row["editorial_state"] != "Aprobada":
         raise HTTPException(status_code=409, detail="La noticia debe aprobarse en Revisión editorial antes de publicarse.")
 
-    message = facebook_message_for_news(row)
+    automatic_message = facebook_message_for_news(row)
+    message = payload.message if payload.message is not None else automatic_message
+    final_copy_edited = payload.message is not None and message != automatic_message
     if len(message) < 3:
         raise HTTPException(status_code=400, detail="La noticia no tiene contenido suficiente para publicarse.")
 
@@ -4933,7 +4946,7 @@ def publish_news_to_facebook(
         "Programó en Facebook" if scheduled_at is not None else "Publicó en Facebook",
         "noticia",
         news_id,
-        str(updated["title"]),
+        f"{updated['title']}{' · texto final editado' if final_copy_edited else ''}",
     )
     return FacebookPublishResult(
         news=row_to_news(updated),

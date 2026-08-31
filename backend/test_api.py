@@ -48,7 +48,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.18.1")
+        self.assertEqual(health.json()["version"], "1.19.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -1132,13 +1132,14 @@ class PulsoMonitorApiTests(unittest.TestCase):
             scheduled = self.client.post(
                 f"/api/noticias/{scheduled_news['id']}/publicar-facebook",
                 headers=self.headers,
-                json={"scheduled_at": future},
+                json={"scheduled_at": future, "message": "Texto final personalizado para Facebook.\n\n#PulsoTequila"},
             )
         self.assertEqual(scheduled.status_code, 200)
         self.assertTrue(scheduled.json()["scheduled"])
         self.assertEqual(scheduled.json()["news"]["status"], "Programada")
         self.assertEqual(schedule_mock.call_args.args[2]["published"], "false")
         self.assertIn("scheduled_publish_time", schedule_mock.call_args.args[2])
+        self.assertEqual(schedule_mock.call_args.args[2]["message"], "Texto final personalizado para Facebook.\n\n#PulsoTequila")
 
         with patch.object(main, "facebook_graph_delete", return_value={"success": True}):
             cancelled = self.client.delete(
