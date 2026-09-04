@@ -29,6 +29,7 @@ import type {
   NewsListResponse,
   NewsStats,
   RadarItemList,
+  RadarBatchResult,
   RadarScanResult,
   RadarSource,
   RadarSourceInput,
@@ -445,6 +446,13 @@ export const api = {
 
   importRadarItem(id: number) {
     return request<NewsItem>(`/api/radar/hallazgos/${id}/importar`, { method: "POST" });
+  },
+
+  updateRadarItemsBatch(action: "import" | "dismiss", itemIds: number[]) {
+    return request<RadarBatchResult>("/api/radar/hallazgos/lote", {
+      method: "POST",
+      body: JSON.stringify({ action, item_ids: itemIds }),
+    });
   },
 
   facebookStatus() {

@@ -357,11 +357,19 @@ export interface RadarItem {
   relevance_level: "Alta" | "Media" | "Baja";
   relevance_reason: string;
   imported_news_id: number | null;
+  dismissed_at: string | null;
 }
 
 export interface RadarItemList {
   items: RadarItem[];
   total: number;
+}
+
+export interface RadarBatchResult {
+  requested: number;
+  imported: number;
+  dismissed: number;
+  protected: number;
 }
 
 export interface RadarStats {
