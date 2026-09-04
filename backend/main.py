@@ -382,6 +382,8 @@ def init_database() -> None:
             db.execute("ALTER TABLE radar_items ADD COLUMN relevance_level TEXT NOT NULL DEFAULT 'Media'")
         if "relevance_reason" not in radar_item_columns:
             db.execute("ALTER TABLE radar_items ADD COLUMN relevance_reason TEXT NOT NULL DEFAULT ''")
+        if "dismissed_at" not in radar_item_columns:
+            db.execute("ALTER TABLE radar_items ADD COLUMN dismissed_at TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_detected ON radar_items(detected_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_radar_items_imported ON radar_items(imported_news_id)")
         legacy_radar_items = db.execute(
@@ -1010,11 +1012,24 @@ class RadarItem(BaseModel):
     relevance_level: Literal["Alta", "Media", "Baja"] = "Media"
     relevance_reason: str = ""
     imported_news_id: int | None
+    dismissed_at: str | None = None
 
 
 class RadarItemList(BaseModel):
     items: list[RadarItem]
     total: int
+
+
+class RadarBatchRequest(BaseModel):
+    action: Literal["import", "dismiss"]
+    item_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+class RadarBatchResult(BaseModel):
+    requested: int
+    imported: int = 0
+    dismissed: int = 0
+    protected: int = 0
 
 
 class RadarStats(BaseModel):
@@ -2214,7 +2229,7 @@ def prune_automatic_drafts(max_per_municipality: int = 20, days: int = 7) -> int
 
 
 def import_radar_item_record(db: sqlite3.Connection, item: sqlite3.Row, now: str, force: bool = False) -> int | None:
-    if item["imported_news_id"] is not None or (not force and not radar_item_is_recent(item["published_at"], item["detected_at"])):
+    if item["imported_news_id"] is not None or item["dismissed_at"] is not None or (not force and not radar_item_is_recent(item["published_at"], item["detected_at"])):
         return None
     score, _, _ = local_relevance_analysis(item["title"], item["summary"], item["municipality"])
     if not force and score < 55:
@@ -2340,7 +2355,7 @@ def scan_radar_source(source: sqlite3.Row) -> tuple[int, int, int, int]:
                 """
                 SELECT i.*, s.name AS source_name, s.municipality, s.category
                 FROM radar_items i JOIN radar_sources s ON s.id = i.source_id
-                WHERE i.source_id = ? AND i.imported_news_id IS NULL
+                WHERE i.source_id = ? AND i.imported_news_id IS NULL AND i.dismissed_at IS NULL
                 ORDER BY COALESCE(i.published_at, i.detected_at) DESC LIMIT 8
                 """,
                 (source["id"],),
@@ -2593,6 +2608,7 @@ def cleanup_pending_radar_items(days: int = 7) -> int:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
     predicate = """
         imported_news_id IS NULL
+        AND dismissed_at IS NULL
         AND datetime(COALESCE(published_at, detected_at)) < datetime(?)
     """
     with connection() as db:
@@ -3056,7 +3072,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Pulso Monitor API",
-    version="1.19.0",
+    version="1.23.0",
     description="API local para administrar noticias, revisión editorial, calendario, automatizaciones, estadísticas, usuarios, cobertura, seguridad y publicación.",
     lifespan=lifespan,
 )
@@ -3075,7 +3091,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.19.0"}
+    return {"status": "ok", "version": "1.23.0"}
 
 
 @app.get("/api/imagenes/{filename}")
@@ -3550,8 +3566,8 @@ def radar_statistics(_: Annotated[str, Depends(current_user)]) -> RadarStats:
         ).fetchone()
         item_row = db.execute(
             """
-            SELECT COUNT(*) AS findings,
-                   SUM(CASE WHEN imported_news_id IS NULL THEN 1 ELSE 0 END) AS pending,
+            SELECT SUM(CASE WHEN dismissed_at IS NULL THEN 1 ELSE 0 END) AS findings,
+                   SUM(CASE WHEN imported_news_id IS NULL AND dismissed_at IS NULL THEN 1 ELSE 0 END) AS pending,
                    SUM(CASE WHEN imported_news_id IS NOT NULL THEN 1 ELSE 0 END) AS imported
             FROM radar_items
             """
@@ -3572,7 +3588,7 @@ def list_radar_sources(_: Annotated[str, Depends(current_user)]) -> list[RadarSo
             """
             SELECT s.*,
                    COUNT(i.id) AS findings,
-                   SUM(CASE WHEN i.id IS NOT NULL AND i.imported_news_id IS NULL THEN 1 ELSE 0 END) AS pending
+                   SUM(CASE WHEN i.id IS NOT NULL AND i.imported_news_id IS NULL AND i.dismissed_at IS NULL THEN 1 ELSE 0 END) AS pending
             FROM radar_sources s
             LEFT JOIN radar_items i ON i.source_id = s.id
             GROUP BY s.id
@@ -3707,7 +3723,9 @@ def list_radar_items(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> RadarItemList:
-    where = " WHERE i.imported_news_id IS NULL" if pending_only else ""
+    where = " WHERE i.dismissed_at IS NULL"
+    if pending_only:
+        where += " AND i.imported_news_id IS NULL"
     with connection() as db:
         total = db.execute(f"SELECT COUNT(*) FROM radar_items i{where}").fetchone()[0]
         rows = db.execute(
@@ -3721,6 +3739,55 @@ def list_radar_items(
             (limit, offset),
         ).fetchall()
     return RadarItemList(items=[RadarItem(**dict(row)) for row in rows], total=int(total))
+
+
+@app.post("/api/radar/hallazgos/lote", response_model=RadarBatchResult)
+def update_radar_items_batch(
+    payload: RadarBatchRequest,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+) -> RadarBatchResult:
+    require_role(user, "Administrador", "Editor")
+    item_ids = list(dict.fromkeys(payload.item_ids))
+    placeholders = ",".join("?" for _ in item_ids)
+    now = utc_now()
+    imported_ids: list[int] = []
+    dismissed = 0
+    protected = 0
+    with connection() as db:
+        rows = db.execute(
+            f"""
+            SELECT i.*, s.name AS source_name, s.municipality, s.category
+            FROM radar_items i JOIN radar_sources s ON s.id = i.source_id
+            WHERE i.id IN ({placeholders})
+            """,
+            item_ids,
+        ).fetchall()
+        protected += len(item_ids) - len(rows)
+        for item in rows:
+            if item["imported_news_id"] is not None or item["dismissed_at"] is not None:
+                protected += 1
+                continue
+            if payload.action == "dismiss":
+                db.execute("UPDATE radar_items SET dismissed_at = ? WHERE id = ?", (now, item["id"]))
+                dismissed += 1
+                continue
+            news_id = import_radar_item_record(db, item, now, force=True)
+            if news_id is None:
+                protected += 1
+            else:
+                imported_ids.append(news_id)
+    for news_id in imported_ids:
+        maybe_auto_geolocate_news(news_id)
+    audit(
+        user,
+        "Importó hallazgos Radar por lote" if payload.action == "import" else "Descartó hallazgos Radar por lote",
+        "radar",
+        ",".join(map(str, item_ids)),
+        f"{len(imported_ids)} importados · {dismissed} descartados · {protected} protegidos",
+    )
+    return RadarBatchResult(
+        requested=len(item_ids), imported=len(imported_ids), dismissed=dismissed, protected=protected,
+    )
 
 
 @app.post("/api/radar/hallazgos/{item_id}/importar", response_model=NewsItem, status_code=status.HTTP_201_CREATED)
@@ -3738,6 +3805,8 @@ def import_radar_item(item_id: int, _: Annotated[str, Depends(current_user)]) ->
             raise HTTPException(status_code=404, detail="El hallazgo no existe.")
         if item["imported_news_id"] is not None:
             raise HTTPException(status_code=409, detail="Este hallazgo ya fue importado a Noticias.")
+        if item["dismissed_at"] is not None:
+            raise HTTPException(status_code=409, detail="Este hallazgo fue descartado y ya no puede importarse.")
         news_id = import_radar_item_record(db, item, now, force=True)
         if news_id is None:
             linked = db.execute("SELECT imported_news_id FROM radar_items WHERE id = ?", (item_id,)).fetchone()

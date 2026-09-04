@@ -48,7 +48,7 @@ class PulsoMonitorApiTests(unittest.TestCase):
     def test_health_and_authentication(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["version"], "1.19.0")
+        self.assertEqual(health.json()["version"], "1.23.0")
         self.assertEqual(self.client.get("/api/noticias").status_code, 401)
         self.assertEqual(self.client.get("/api/noticias", headers=self.headers).status_code, 200)
 
@@ -1409,13 +1409,39 @@ class PulsoMonitorApiTests(unittest.TestCase):
         findings = self.client.get("/api/radar/hallazgos?pending_only=true", headers=self.headers)
         self.assertEqual(findings.json()["total"], 2)
         item_id = findings.json()["items"][0]["id"]
-        imported = self.client.post(f"/api/radar/hallazgos/{item_id}/importar", headers=self.headers)
-        self.assertEqual(imported.status_code, 201)
-        self.assertEqual(imported.json()["status"], "Pendiente")
-        self.assertEqual(imported.json()["source"], "Fuente de prueba")
-        self.assertTrue(imported.json()["image_url"])
+        dismissed_id = findings.json()["items"][1]["id"]
+        imported = self.client.post(
+            "/api/radar/hallazgos/lote",
+            headers=self.headers,
+            json={"action": "import", "item_ids": [item_id]},
+        )
+        self.assertEqual(imported.status_code, 200)
+        self.assertEqual(imported.json()["imported"], 1)
+        dismissed = self.client.post(
+            "/api/radar/hallazgos/lote",
+            headers=self.headers,
+            json={"action": "dismiss", "item_ids": [dismissed_id]},
+        )
+        self.assertEqual(dismissed.status_code, 200)
+        self.assertEqual(dismissed.json()["dismissed"], 1)
+        visible = self.client.get("/api/radar/hallazgos", headers=self.headers).json()
+        self.assertEqual(visible["total"], 1)
+        self.assertEqual(visible["items"][0]["id"], item_id)
+        self.assertIsNotNone(visible["items"][0]["imported_news_id"])
         duplicate = self.client.post(f"/api/radar/hallazgos/{item_id}/importar", headers=self.headers)
         self.assertEqual(duplicate.status_code, 409)
+        protected = self.client.post(
+            "/api/radar/hallazgos/lote",
+            headers=self.headers,
+            json={"action": "dismiss", "item_ids": [item_id, dismissed_id]},
+        )
+        self.assertEqual(protected.json()["protected"], 2)
+        with patch.object(main, "fetch_feed_bytes", return_value=feed), patch.object(
+            main, "fetch_open_graph_image", return_value="https://example.com/portada-og.jpg"
+        ), patch.object(main, "news_image_looks_like_logo", return_value=False):
+            third_scan = self.client.post(f"/api/radar/escanear?source_id={source_id}", headers=self.headers)
+        self.assertEqual(third_scan.json()["detected"], 0)
+        self.assertEqual(self.client.get("/api/radar/hallazgos", headers=self.headers).json()["total"], 1)
 
     def test_radar_source_is_paused_after_three_consecutive_errors(self):
         source = self.client.post(
